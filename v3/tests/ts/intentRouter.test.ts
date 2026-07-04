@@ -89,6 +89,22 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({ name: "open_app", args: { app: "spotify" } });
   });
 
+  it("routes open clock requests instantly", () => {
+    const decision = routeUserIntent("open the clock app");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation?.name).toBe("open_app");
+    expect(String(decision.invocation?.args.app ?? "").toLowerCase()).toContain("clock");
+  });
+
+  it("routes set alarm requests instantly", () => {
+    const decision = routeUserIntent("set an alarm for 7:30 am");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "7:30 am", label: "Alarm" }
+    });
+  });
+
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");
