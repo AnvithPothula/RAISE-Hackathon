@@ -12,6 +12,8 @@ import threading
 import wave
 from pathlib import Path
 
+from typing import Callable
+
 from .config import GradiumConfig, WorkerConfig
 from .protocol import JsonlWriter
 
@@ -23,6 +25,65 @@ _PCM_SAMPLE_RATES = {
     "pcm_16000": 16000,
     "pcm_8000": 8000,
 }
+
+
+def pcm_output_format(cfg: GradiumConfig) -> str:
+    """The raw-PCM output format to request (falls back to 48 kHz "pcm")."""
+    return cfg.tts_output_format if cfg.tts_output_format in _PCM_SAMPLE_RATES else "pcm"
+
+
+def pcm_sample_rate(cfg: GradiumConfig) -> int:
+    return _PCM_SAMPLE_RATES.get(pcm_output_format(cfg), 48000)
+
+
+def write_wav_pcm(wav_path: Path, pcm: bytes, sample_rate: int) -> None:
+    """Wrap raw 16-bit mono PCM in a standard WAV container."""
+    with wave.open(str(wav_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)  # 16-bit signed
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm)
+
+
+async def gradium_tts_pcm(
+    cfg: GradiumConfig,
+    text: str,
+    should_stop: Callable[[], bool] | None = None,
+) -> bytes:
+    """Synthesize ``text`` via the Gradium TTS WebSocket and return raw PCM bytes."""
+    import websockets
+
+    setup = {
+        "type": "setup",
+        "voice_id": cfg.tts_voice_id,
+        "model_name": cfg.tts_model,
+        "output_format": pcm_output_format(cfg),
+    }
+    chunks: list[bytes] = []
+    url = f"{cfg.base_ws_url}/speech/tts"
+
+    async with websockets.connect(url, additional_headers={"x-api-key": cfg.api_key}) as ws:
+        await ws.send(json.dumps(setup))
+        ready = json.loads(await ws.recv())
+        if ready.get("type") != "ready":
+            raise RuntimeError(f"Unexpected TTS handshake response: {ready}")
+
+        await ws.send(json.dumps({"type": "text", "text": text}))
+        await ws.send(json.dumps({"type": "end_of_stream"}))
+
+        while True:
+            if should_stop is not None and should_stop():
+                break
+            msg = json.loads(await ws.recv())
+            kind = msg.get("type")
+            if kind == "audio":
+                chunks.append(base64.b64decode(msg["audio"]))
+            elif kind == "end_of_stream":
+                break
+            elif kind == "error":
+                raise RuntimeError(msg.get("message", "Gradium TTS error"))
+
+    return b"".join(chunks)
 
 
 class GradiumSpeaker:
@@ -96,53 +157,15 @@ class GradiumSpeaker:
                     pass
 
     async def _synthesize(self, text: str) -> bytes:
-        import websockets
-
-        cfg: GradiumConfig = self._gradium
-        output_format = cfg.tts_output_format if cfg.tts_output_format in _PCM_SAMPLE_RATES else "pcm"
-        setup = {
-            "type": "setup",
-            "voice_id": cfg.tts_voice_id,
-            "model_name": cfg.tts_model,
-            "output_format": output_format,
-        }
-        chunks: list[bytes] = []
-        url = f"{cfg.base_ws_url}/speech/tts"
+        cfg = self._gradium
         self._events.emit(
             "tts_command",
-            command=["gradium", url, cfg.tts_voice_id, output_format],
+            command=["gradium", f"{cfg.base_ws_url}/speech/tts", cfg.tts_voice_id, pcm_output_format(cfg)],
         )
-
-        async with websockets.connect(url, additional_headers={"x-api-key": cfg.api_key}) as ws:
-            await ws.send(json.dumps(setup))
-            ready = json.loads(await ws.recv())
-            if ready.get("type") != "ready":
-                raise RuntimeError(f"Unexpected TTS handshake response: {ready}")
-
-            await ws.send(json.dumps({"type": "text", "text": text}))
-            await ws.send(json.dumps({"type": "end_of_stream"}))
-
-            while True:
-                if self._stop.is_set():
-                    break
-                msg = json.loads(await ws.recv())
-                kind = msg.get("type")
-                if kind == "audio":
-                    chunks.append(base64.b64decode(msg["audio"]))
-                elif kind == "end_of_stream":
-                    break
-                elif kind == "error":
-                    raise RuntimeError(msg.get("message", "Gradium TTS error"))
-
-        return b"".join(chunks)
+        return await gradium_tts_pcm(cfg, text, should_stop=self._stop.is_set)
 
     def _write_wav(self, wav_path: Path, pcm: bytes) -> None:
-        sample_rate = _PCM_SAMPLE_RATES.get(self._gradium.tts_output_format, 48000)
-        with wave.open(str(wav_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)  # 16-bit signed
-            handle.setframerate(sample_rate)
-            handle.writeframes(pcm)
+        write_wav_pcm(wav_path, pcm, pcm_sample_rate(self._gradium))
 
     def _play_wav(self, wav_path: Path) -> None:
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
