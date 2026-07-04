@@ -16,9 +16,9 @@
     "channels": 1,
     "wakeWord": "mark",
     "wakeThreshold": 0.25,
-    "asrTimeoutSeconds": 10,
-    "silenceTimeoutSeconds": 3,
-    "ttsLengthScale": 1.15
+    "asrTimeoutSeconds": 7,
+    "silenceTimeoutSeconds": 2,
+    "ttsLengthScale": 1.5
   },
   "ollama": {
     "baseUrl": "http://127.0.0.1:11434",
@@ -95,7 +95,8 @@
       },
       {
         "name": "sequential-thinking",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Off: Gemma already has native adaptive thinking. This external tool made the model over-think simple questions and call it needlessly (e.g. for 'why do we celebrate 4th of July'), adding latency and timeouts.",
         "transport": "stdio",
         "command": "npx",
         "args": [
@@ -105,7 +106,8 @@
       },
       {
         "name": "puppeteer",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Off: browser-automation adds ~7 tools irrelevant to a voice assistant and bloats first-token latency on the local model. Enable only for a dedicated browser-control demo.",
         "transport": "stdio",
         "command": "npx",
         "args": [
@@ -115,7 +117,8 @@
       },
       {
         "name": "time",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Off: redundant with the built-in get_time tool. It confused the model into random calls like get_week_year.",
         "transport": "stdio",
         "command": "npx",
         "args": [
@@ -125,7 +128,8 @@
       },
       {
         "name": "context7",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Off: code-library documentation is irrelevant to a voice assistant. The model called it with nonsense queries (e.g. 'how to change icon color on hover') for unrelated questions.",
         "transport": "stdio",
         "command": "npx",
         "args": [

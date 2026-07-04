@@ -1,14 +1,38 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppConfig } from "../shared/types.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 export const appRoot = path.resolve(dirname, "../..");
+
+// config.json is the SHARED, committed defaults for the whole team. The app never
+// writes it. Each user's personal changes are stored as a delta in their own OS
+// user-data directory (below), so settings persist across restarts without ever
+// clobbering the shared file or showing up in git.
 const configPath = path.join(appRoot, "config.json");
 
 loadEnvFile(path.join(appRoot, ".env"));
+
+/** Per-user settings file location (outside the repo). Override with PYTHOS_SETTINGS_PATH. */
+export function userSettingsPath(): string {
+  const explicit = process.env.PYTHOS_SETTINGS_PATH?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  const home = os.homedir();
+  let base: string;
+  if (process.platform === "win32") {
+    base = process.env.APPDATA?.trim() || path.join(home, "AppData", "Roaming");
+  } else if (process.platform === "darwin") {
+    base = path.join(home, "Library", "Application Support");
+  } else {
+    base = process.env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config");
+  }
+  return path.join(base, "Pythos", "user-settings.json");
+}
 
 function loadEnvFile(envPath: string): void {
   if (!fs.existsSync(envPath)) {
@@ -48,9 +72,54 @@ type RawConfig = AppConfig & {
   audio: Record<string, unknown>;
 };
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Recursively layer `override` onto `base`. Objects merge; arrays and scalars replace. */
+function deepMerge<T>(base: T, override: unknown): T {
+  if (!isPlainObject(base) || !isPlainObject(override)) {
+    return (override === undefined ? base : (override as T));
+  }
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const current = (base as Record<string, unknown>)[key];
+    result[key] = isPlainObject(current) && isPlainObject(value) ? deepMerge(current, value) : value;
+  }
+  return result as T;
+}
+
+/** The part of `next` that differs from `base` (recursively). undefined when equal. */
+function deepDiff(base: unknown, next: unknown): unknown {
+  if (isPlainObject(base) && isPlainObject(next)) {
+    const diff: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(next)) {
+      const sub = deepDiff((base as Record<string, unknown>)[key], value);
+      if (sub !== undefined) {
+        diff[key] = sub;
+      }
+    }
+    return Object.keys(diff).length ? diff : undefined;
+  }
+  return JSON.stringify(base) === JSON.stringify(next) ? undefined : next;
+}
+
+function readDefaults(): RawConfig {
+  return JSON.parse(fs.readFileSync(configPath, "utf-8")) as RawConfig;
+}
+
+function readUserOverrides(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(userSettingsPath(), "utf-8"));
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    // No per-user settings yet (or unreadable) — fall back to shared defaults.
+    return {};
+  }
+}
+
 export function readConfig(): RawConfig {
-  const raw = fs.readFileSync(configPath, "utf-8");
-  const config = JSON.parse(raw) as RawConfig;
+  const config = deepMerge(readDefaults(), readUserOverrides());
 
   if (process.env.PYTHOS_PI_COMMAND) {
     config.pi.command = process.env.PYTHOS_PI_COMMAND;
@@ -62,7 +131,14 @@ export function readConfig(): RawConfig {
 export function writeConfig(config: AppConfig): RawConfig {
   const nextConfig = structuredClone(config) as AppConfig;
   nextConfig.pi.args = nextConfig.pi.args.filter((arg) => arg !== "--no-tools");
-  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8");
+
+  // Persist ONLY this user's delta from the shared defaults, in their own
+  // user-data file. The committed config.json is never modified.
+  const overrides = deepDiff(readDefaults(), nextConfig) ?? {};
+  const target = userSettingsPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify(overrides, null, 2)}\n`, "utf-8");
+
   return readConfig();
 }
 

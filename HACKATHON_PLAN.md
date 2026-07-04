@@ -124,6 +124,32 @@ Rule applied: every quick-reply chip under the input must be something `gemma4:1
 
 **Removed "Turn on do not disturb" entirely.** macOS 26.5 has no reliable no-setup way to toggle Focus/DND: the legacy `defaults`+`killall` method is dead, the `shortcuts` CLI can't create a shortcut programmatically, and UI automation needs Accessibility permission. Per the "don't list features that aren't possible" rule, the DND tool, declaration, matcher, and chip were all deleted rather than shipping a shortcut-dependent stub. Replaced with the on-device **screen vision** chip — the single most on-theme feature for this track (local multimodal Gemma). Tests: 51 pass, both TS projects typecheck clean.
 
+### Fourth pass: MCP tool-overload postmortem (from a live demo log) ✅
+A teammate had enabled **5 MCP servers** (`system`, `sequential-thinking`, `puppeteer`, `time`, `context7`) and left the model on `gemma4:12b`. The live log showed the classic overload failure mode:
+
+- "why do we celebrate 4th of July" → model called `sequential-thinking`, then `context7` with the nonsense query *"how to change icon color on hover"*, then `time` → **timed out after ~4.5 min**. A general-knowledge question needs zero tools.
+- "Summarize my clipboard" → model hallucinated *"I don't have clipboard access"* instead of calling the clipboard tool.
+
+Fixes:
+
+| Fix | Detail |
+|-----|--------|
+| **Disabled the overload servers** | `sequential-thinking` (Gemma has native adaptive thinking), `puppeteer` (~7 irrelevant browser tools), `time` (duplicate of built-in `get_time`), `context7` (code-docs, irrelevant). Left enabled + documented in `config.json` with reasons. Only `system` stays on. |
+| **Default to fast `e2b`** | `lowResourceMode: true`. Benchmarked: **e2b 0.54s TTFT / 48 tok/s vs 12b 1.07s / 11.6 tok/s.** Toggle off in Settings for 12b quality. |
+| **Reliable clipboard** | New local `clipboard` read tool (pbpaste/PowerShell/xclip) + direct matcher → "What's on my clipboard?" reads instantly, no model round-trip. Chip renamed from "Summarize my clipboard". |
+| **Answer general questions directly** | System-prompt rule: for facts/history/explanations the model knows, answer directly and never call an unrelated tool. **Verified live:** "why do we celebrate 4th of July" → `tools=[none]`, correct answer, no timeout. |
+
+Lesson (reinforces the plan's "few working tools beat many flaky ones"): on a local ~12B/e2b model, every extra MCP tool schema both slows first-token latency and raises the odds of a wrong/irrelevant tool call. Keep the default tool surface tight; enable extra connectors only for a specific scripted demo beat. Tests: 62 pass, typecheck clean.
+
+### Per-user settings (no more shared-config clobbering) ✅
+Root of the previous regression: the app saved settings by rewriting the committed `config.json`, so one teammate enabling 5 MCP servers (or toggling the model) changed it for **everyone** and showed up in git. Now:
+
+- `config.json` is **shared, read-only defaults** — the app never writes it.
+- Each user's changes are saved as a **delta** in their own OS user-data dir (`~/Library/Application Support/Pythos/user-settings.json` on macOS, `%APPDATA%\Pythos\...` on Windows, `~/.config/Pythos/...` on Linux; override with `PYTHOS_SETTINGS_PATH`).
+- `readConfig` deep-merges the user delta over defaults, so unchanged fields still track team defaults and each user's prefs survive quitting the app.
+
+Implemented in `config.ts` (`deepMerge`/`deepDiff`, `userSettingsPath`); 4 new tests assert the delta-only write and that `config.json` is never modified. Tests: 66 pass, typecheck clean.
+
 ### P0 — Gemma on-device brain ✅
 | # | Task | Status |
 |---|------|--------|

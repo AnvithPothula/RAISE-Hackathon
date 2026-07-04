@@ -46,7 +46,13 @@ type ConnectedNode = {
 const QUICK_REPLIES = [
   "What can you do?",
   "What's on my screen?",
+<<<<<<< Updated upstream
   "How's the weather?"
+=======
+  "Open my calendar",
+  "What's on my clipboard?",
+  "Play something relaxing"
+>>>>>>> Stashed changes
 ];
 
 type SideTab = "chat" | "activity";

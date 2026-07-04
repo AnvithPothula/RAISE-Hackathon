@@ -441,6 +441,14 @@ describe("resolveDirectLocalTool", () => {
     expect(resolveDirectLocalTool("what is open source software")).toBeNull();
   });
 
+  it("routes clipboard reads straight to the local clipboard tool", () => {
+    expect(resolveDirectLocalTool("What's on my clipboard?")).toEqual({ name: "clipboard", args: {} });
+    expect(resolveDirectLocalTool("read my clipboard")).toEqual({ name: "clipboard", args: {} });
+    expect(resolveDirectLocalTool("check my clipboard")).toEqual({ name: "clipboard", args: {} });
+    // Unrelated prompts must not trigger the clipboard tool.
+    expect(resolveDirectLocalTool("what is a clipboard")).not.toEqual({ name: "clipboard", args: {} });
+  });
+
   it("routes screen questions straight to local vision", () => {
     // Trailing punctuation is stripped by the direct-prompt cleaner.
     expect(resolveDirectLocalTool("What's on my screen?")).toEqual({

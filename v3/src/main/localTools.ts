@@ -22,6 +22,7 @@ export type LocalToolResult = {
     | "cursor_agent"
     | "memory"
     | "capabilities"
+    | "clipboard"
     | "spotify";
   text: string;
   location?: string;
@@ -306,6 +307,17 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
     return { name: "capabilities", args: {} };
   }
 
+  // Clipboard read — instant local read, no model round trip (the model tends to
+  // wrongly claim it "has no clipboard access" when the tool list is large).
+  if (
+    /\bclipboard\b/i.test(normalizedPrompt) &&
+    (/\b(my|the)\s+clipboard\b/i.test(normalizedPrompt) ||
+      /\b(read|check|show|get|grab|paste)\b/i.test(normalizedPrompt)) &&
+    !/\bwhat\s+(?:is|are)\s+(?:a|an|the)\b/i.test(normalizedPrompt)
+  ) {
+    return { name: "clipboard", args: {} };
+  }
+
   // Screen understanding — route straight to the local Gemma vision tool so it is
   // a single on-device vision call instead of an extra model tool-selection round.
   if (
@@ -435,6 +447,10 @@ export async function runNamedLocalTool(
 
   if (name === "capabilities") {
     return describeCapabilities();
+  }
+
+  if (name === "clipboard") {
+    return readClipboard();
   }
 
   const requestedLocation = cleanLocation(args.location ?? "");
@@ -1536,6 +1552,30 @@ async function runCodeTool(args: LocalToolArgs): Promise<LocalToolResult> {
       `${label}Ran ${language} locally. Output:\n${stdout || "(no output printed)"}` +
       (stderr ? `\nStderr: ${stderr}` : "")
   };
+}
+
+const CLIPBOARD_TIMEOUT_MS = 5000;
+
+/** Read the system clipboard on-device (pbpaste / PowerShell / xclip). No model call. */
+async function readClipboard(): Promise<LocalToolResult> {
+  const [command, commandArgs] =
+    process.platform === "darwin"
+      ? (["pbpaste", []] as const)
+      : process.platform === "win32"
+        ? (["powershell", ["-NoProfile", "-Command", "Get-Clipboard"]] as const)
+        : (["xclip", ["-selection", "clipboard", "-o"]] as const);
+
+  const text = await new Promise<string>((resolve) => {
+    execFile(command, [...commandArgs], { timeout: CLIPBOARD_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      resolve(error ? "" : String(stdout ?? "").trim());
+    });
+  });
+
+  if (!text) {
+    return { name: "clipboard", text: "Your clipboard is empty, or I could not read it." };
+  }
+  const clipped = text.length > 1200 ? `${text.slice(0, 1200)}… (truncated)` : text;
+  return { name: "clipboard", text: `Your clipboard contains: ${clipped}` };
 }
 
 /** Instant, model-free capability summary for "what can you do?" style prompts. */
