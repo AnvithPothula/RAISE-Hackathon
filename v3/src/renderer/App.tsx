@@ -29,6 +29,7 @@ import type {
   ModelStats,
   PiEvent,
   PiStatus,
+  ThinkLevel,
   ThinkMode,
   WorkerEvent
 } from "../shared/types";
@@ -37,6 +38,7 @@ const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 type VoiceAction = "wakeword" | "mic";
 type NodeStatus = "idle" | "listening" | "thinking" | "speaking" | "error";
+type SettingsTab = "general" | "audio" | "tools" | "paths";
 
 type ConnectedNode = {
   id: string;
@@ -44,8 +46,6 @@ type ConnectedNode = {
   status: NodeStatus;
   lastSeen: number;
 };
-
-type SettingsTab = "general" | "audio" | "tools" | "paths";
 
 const QUICK_REPLIES = [
   "What can you do?",
@@ -91,130 +91,179 @@ export function App() {
   const [showStats, setShowStats] = useState(false);
   const [sideWidth, setSideWidth] = useState(390);
   const [isResizing, setIsResizing] = useState(false);
+
   const toolFlashTimer = useRef<number | null>(null);
   const promptRef = useRef<HTMLInputElement>(null);
   const resizeStartX = useRef(0);
   const resizeStartWidth = useRef(sideWidth);
 
-  useEffect(() => {
-    if (!window.pythos) {
-      setError("Electron preload bridge did not load. Rebuild and restart the app.");
-      setState("error");
-      return;
-    }
+  const statusText = useMemo(() => {
+    if (state === "idle") return "Ready";
+    if (state === "loading") return "Loading audio";
+    if (state === "wakeword") return `Say ${String(config?.audio?.wakeWord ?? "mark")}`;
+    if (state === "listening") return partial || "Listening";
+    if (state === "thinking") return "Thinking";
+    if (state === "speaking") return "Speaking";
+    if (state === "error") return "Needs attention";
+    return "Stopped";
+  }, [partial, state, config]);
 
-    window.pythos.getConfig().then((loadedConfig) => {
-      setConfig(loadedConfig);
-      setSettingsDraft(loadedConfig);
-      setShowStats(Boolean(loadedConfig.gui?.showPerformanceStats));
-      setConfigSummary(formatRuntimeSummary(loadedConfig, piStatus));
-    }).catch((reason: unknown) => {
-      setError(`Config load failed: ${String(reason)}`);
-      setState("error");
-    });
+  const filteredConversation = useMemo(() => {
+    if (!searchQuery.trim()) return conversation;
+    const query = searchQuery.toLowerCase();
+    return conversation.filter((item) => item.text.toLowerCase().includes(query));
+  }, [conversation, searchQuery]);
 
-    window.pythos.getPiStatus().then((status) => {
-      setPiStatus(status);
-    }).catch((reason: unknown) => {
-      setPiStatus({
-        enabled: false,
-        available: false,
-        running: false,
-        command: null,
-        args: [],
-        reason: `Pi status failed: ${String(reason)}`
+  const filteredToolEvents = useMemo(() => {
+    if (!searchQuery.trim()) return toolEvents;
+    const query = searchQuery.toLowerCase();
+    return toolEvents.filter((event) => summarizeEvent(event.payload).toLowerCase().includes(query));
+  }, [toolEvents, searchQuery]);
+
+  const uptime = useMemo(() => formatDurationMs(Date.now() - startTime), [startTime, state]);
+
+  const visibleConversation = streamingText && !searchQuery.trim()
+    ? [...filteredConversation, { id: streamingText.id, role: "assistant" as const, text: streamingText.text, timestamp: Date.now() }]
+    : filteredConversation;
+
+  function toggleMic() {
+    if (!window.pythos) return setBridgeError();
+    if (state === "listening") {
+      setPendingVoiceAction("mic");
+      setWakeSessionArmed(false);
+      window.pythos.stopListening();
+      setState("idle");
+    } else {
+      setError(null);
+      setWakeSessionArmed(false);
+      setPendingVoiceAction("mic");
+      window.pythos.startListening().catch((reason: unknown) => {
+        setPendingVoiceAction(null);
+        setError(`Microphone failed: ${String(reason)}`);
+        setState("error");
       });
-    });
-
-    window.pythos.getMcpStatus?.().then((status) => {
-      setMcpStatus(status);
-    }).catch(() => {
-      setMcpStatus({ enabled: false, servers: [] });
-    });
-
-    const offWorker = window.pythos.onWorkerEvent(handleWorkerEvent);
-    const offPi = window.pythos.onPiEvent(handlePiEvent);
-    const offPiStatus = window.pythos.onPiStatus((status) => setPiStatus(status));
-    const offMcpStatus = window.pythos.onMcpStatus?.((status) => setMcpStatus(status)) ?? (() => {});
-    const offState = window.pythos.onAssistantState((next) => setState(next as AssistantState));
-    const offStats = window.pythos.onModelStats((stats) => setModelStats(stats));
-    const handleOnline = () => setOnline(true);
-    const handleOffline = () => setOnline(false);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
-        if (event.key === "Escape") {
-          (event.target as HTMLElement).blur();
-        }
-        return;
-      }
-      if (event.key === " " || event.code === "Space") {
-        event.preventDefault();
-        toggleMic();
-      } else if (event.key === "w" || event.key === "W") {
-        toggleWakeword();
-      } else if (event.key === "Escape") {
-        stopAll();
-      } else if (event.key === "/" || event.key === "?") {
-        event.preventDefault();
-        promptRef.current?.focus();
-      } else if (event.key === "," || event.key === "<") {
-        openSettings();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-
-    return () => {
-      offWorker();
-      offPi();
-      offPiStatus();
-      offMcpStatus();
-      offState();
-      offStats();
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-      window.removeEventListener("keydown", onKeyDown);
-      if (toolFlashTimer.current !== null) {
-        window.clearTimeout(toolFlashTimer.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (config) {
-      setConfigSummary(formatRuntimeSummary(config, piStatus));
     }
-  }, [config, piStatus]);
+  }
 
-  useEffect(() => {
-    if (!isResizing) return;
+  function toggleWakeword() {
+    if (!window.pythos) return setBridgeError();
+    if (wakeSessionArmed || state === "wakeword") {
+      setPendingVoiceAction("wakeword");
+      setWakeSessionArmed(false);
+      window.pythos.stopListening();
+      setState("idle");
+    } else {
+      setError(null);
+      setWakeSessionArmed(true);
+      setPendingVoiceAction("wakeword");
+      window.pythos.startWakeword().catch((reason: unknown) => {
+        setPendingVoiceAction(null);
+        setError(`Wake word failed: ${String(reason)}`);
+        setState("error");
+      });
+    }
+  }
 
-    const onMove = (event: MouseEvent) => {
-      const delta = resizeStartX.current - event.clientX;
-      const next = Math.min(Math.max(resizeStartWidth.current + delta, 300), 600);
-      setSideWidth(next);
-      document.documentElement.style.setProperty("--side-width", `${next}px`);
+  function stopAll() {
+    if (!window.pythos) return setBridgeError();
+    window.pythos.stopListening();
+    window.pythos.stopSpeaking();
+    window.pythos.abortPi();
+    setWakeSessionArmed(false);
+    setPendingVoiceAction(null);
+    setStreamingText(null);
+    setState("idle");
+  }
+
+  function submitTypedPrompt(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!window.pythos) return setBridgeError();
+    const prompt = typedPrompt.trim();
+    if (!prompt) return;
+    setTypedPrompt("");
+    setError(null);
+    setWakeSessionArmed(false);
+    setPendingVoiceAction(null);
+    setConversation((items) => trimItems([...items, { id: nowId(), role: "user" as const, text: prompt, timestamp: Date.now() }], config));
+    setState("thinking");
+    window.pythos.promptAssistant(prompt).catch((reason: unknown) => {
+      setError(`Typed prompt failed: ${String(reason)}`);
+      setState("error");
+    });
+  }
+
+  function sendQuickReply(text: string) {
+    setTypedPrompt(text);
+    setTimeout(() => promptRef.current?.form?.requestSubmit(), 0);
+  }
+
+  function clearContext() {
+    setConversation([]);
+    setToolEvents([]);
+    setStreamingText(null);
+    window.pythos?.clearAssistantContext();
+  }
+
+  function exportTranscript() {
+    const data = {
+      exportedAt: new Date().toISOString(),
+      conversation,
+      toolEvents: toolEvents.map((event) => ({ type: event.type, payload: event.payload }))
     };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pythos-transcript-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
-    const onUp = () => {
-      setIsResizing(false);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
+  function openSettings() {
+    setSettingsDraft(config ? structuredClone(config) : null);
+    setActiveTab("general");
+    setSettingsOpen(true);
+  }
 
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [isResizing]);
+  async function saveSettings() {
+    if (!settingsDraft || !window.pythos) return;
+    const saved = await window.pythos.saveConfig(settingsDraft);
+    const nextPiStatus = await window.pythos.getPiStatus();
+    const nextMcpStatus = await window.pythos.getMcpStatus?.().catch(() => null);
+    setConfig(saved);
+    setSettingsDraft(structuredClone(saved));
+    setPiStatus(nextPiStatus);
+    setMcpStatus(nextMcpStatus);
+    setConfigSummary(formatRuntimeSummary(saved, nextPiStatus));
+    setShowStats(Boolean(saved.gui?.showPerformanceStats));
+    setSettingsOpen(false);
+    setError(null);
+  }
+
+  function startResize(event: React.MouseEvent) {
+    resizeStartX.current = event.clientX;
+    resizeStartWidth.current = sideWidth;
+    setIsResizing(true);
+  }
+
+  function triggerToolFlash() {
+    if (toolFlashTimer.current !== null) window.clearTimeout(toolFlashTimer.current);
+    setToolFlashActive(true);
+    toolFlashTimer.current = window.setTimeout(() => {
+      setToolFlashActive(false);
+      toolFlashTimer.current = null;
+    }, 500);
+  }
+
+  function setBridgeError() {
+    setError("Electron preload bridge is unavailable.");
+    setState("error");
+  }
 
   function handleWorkerEvent(event: WorkerEvent) {
     if (event.type === "state") {
       setState(event.payload.value);
-      if (event.payload.value !== "loading") {
-        setPendingVoiceAction(null);
-      }
+      if (event.payload.value !== "loading") setPendingVoiceAction(null);
       if (event.payload.value === "idle" || event.payload.value === "error" || event.payload.value === "shutdown") {
         setWakeSessionArmed(false);
       }
@@ -231,13 +280,7 @@ export function App() {
     if (event.type === "final_transcript") {
       setPendingVoiceAction(null);
       setPartial("");
-      setConversation((items) => {
-        const next = [
-          ...items,
-          { id: nowId(), role: "user" as const, text: event.payload.text, timestamp: Date.now() }
-        ];
-        return trimItems(next, config);
-      });
+      setConversation((items) => trimItems([...items, { id: nowId(), role: "user" as const, text: event.payload.text, timestamp: Date.now() }], config));
       setState("thinking");
       return;
     }
@@ -268,40 +311,26 @@ export function App() {
       const type = String(payload.type);
       if (type === "status") {
         setError(null);
-        if (state === "error") {
-          setState("thinking");
-        }
+        if (state === "error") setState("thinking");
       }
       if (type === "message_update") {
         const text = extractAssistantText(payload);
         if (text) {
           setError(null);
-          setStreamingText((current) => {
-            const id = current?.id ?? nowId();
-            return { id, text };
-          });
+          setStreamingText((current) => ({ id: current?.id ?? nowId(), text }));
         }
       }
       if (type === "message_end") {
         const text = extractAssistantText(payload);
         if (text || streamingText) {
           setError(null);
-          setConversation((items) => {
-            const next = upsertAssistant(items, text || streamingText?.text || "", streamingText?.id);
-            return trimItems(next, config);
-          });
+          setConversation((items) => trimItems(upsertAssistant(items, text || streamingText?.text || "", streamingText?.id), config));
           setStreamingText(null);
         }
       }
       if (type === "tool_execution_start") {
         triggerToolFlash();
-        setConversation((items) => {
-          const next = [
-            ...items,
-            { id: nowId(), role: "tool" as const, text: formatToolConversationText(payload), timestamp: Date.now() }
-          ];
-          return trimItems(next, config);
-        });
+        setConversation((items) => trimItems([...items, { id: nowId(), role: "tool" as const, text: formatToolConversationText(payload), timestamp: Date.now() }], config));
       }
       if (type === "turn_end") {
         setState("idle");
@@ -310,345 +339,138 @@ export function App() {
     }
   }
 
-  function triggerToolFlash() {
-    if (toolFlashTimer.current !== null) {
-      window.clearTimeout(toolFlashTimer.current);
-    }
-    setToolFlashActive(true);
-    toolFlashTimer.current = window.setTimeout(() => {
-      setToolFlashActive(false);
-      toolFlashTimer.current = null;
-    }, 500);
-  }
-
-  const statusText = useMemo(() => {
-    if (state === "idle") return "Ready";
-    if (state === "loading") return "Loading audio";
-    if (state === "wakeword") return `Say ${String(config?.audio?.wakeWord ?? "mark")}`;
-    if (state === "listening") return partial || "Listening";
-    if (state === "thinking") return "Thinking";
-    if (state === "speaking") return "Speaking";
-    if (state === "error") return "Needs attention";
-    return "Stopped";
-  }, [partial, state, config]);
-
-  const filteredConversation = useMemo(() => {
-    if (!searchQuery.trim()) return conversation;
-    const query = searchQuery.toLowerCase();
-    return conversation.filter((item) => item.text.toLowerCase().includes(query));
-  }, [conversation, searchQuery]);
-
-  const filteredToolEvents = useMemo(() => {
-    if (!searchQuery.trim()) return toolEvents;
-    const query = searchQuery.toLowerCase();
-    return toolEvents.filter((event) => summarizeEvent(event.payload).toLowerCase().includes(query));
-  }, [toolEvents, searchQuery]);
-
-  const uptime = useMemo(() => formatDurationMs(Date.now() - startTime), [startTime, state]);
-
-  const toggleWakeword = () => {
+  useEffect(() => {
     if (!window.pythos) {
-      setError("Electron preload bridge is unavailable.");
+      setError("Electron preload bridge did not load. Rebuild and restart the app.");
       setState("error");
       return;
     }
-    if (wakeSessionArmed || state === "wakeword") {
-      setPendingVoiceAction("wakeword");
-      setWakeSessionArmed(false);
-      window.pythos.stopListening();
-      setState("idle");
-    } else {
-      setError(null);
-      setWakeSessionArmed(true);
-      setPendingVoiceAction("wakeword");
-      window.pythos.startWakeword().catch((reason: unknown) => {
-        setPendingVoiceAction(null);
-        setError(`Wake word failed: ${String(reason)}`);
-        setState("error");
-      });
-    }
-  };
 
-  const toggleMic = () => {
-    if (!window.pythos) {
-      setError("Electron preload bridge is unavailable.");
-      setState("error");
-      return;
-    }
-    if (state === "listening") {
-      setPendingVoiceAction("mic");
-      setWakeSessionArmed(false);
-      window.pythos.stopListening();
-      setState("idle");
-    } else {
-      setError(null);
-      setWakeSessionArmed(false);
-      setPendingVoiceAction("mic");
-      window.pythos.startListening().catch((reason: unknown) => {
-        setPendingVoiceAction(null);
-        setError(`Microphone failed: ${String(reason)}`);
-        setState("error");
-      });
-    }
-  };
-
-  const stopAll = () => {
-    if (!window.pythos) {
-      setError("Electron preload bridge is unavailable.");
-      setState("error");
-      return;
-    }
-    window.pythos.stopListening();
-    window.pythos.stopSpeaking();
-    window.pythos.abortPi();
-    setWakeSessionArmed(false);
-    setPendingVoiceAction(null);
-    setStreamingText(null);
-    setState("idle");
-  };
-
-  const submitTypedPrompt = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!window.pythos) {
-      setError("Electron preload bridge is unavailable.");
-      setState("error");
-      return;
-    }
-    const prompt = typedPrompt.trim();
-    if (!prompt) return;
-    setTypedPrompt("");
-    setError(null);
-    setWakeSessionArmed(false);
-    setPendingVoiceAction(null);
-    setConversation((items) => {
-      const next = [...items, { id: nowId(), role: "user" as const, text: prompt, timestamp: Date.now() }];
-      return trimItems(next, config);
-    });
-    setState("thinking");
-    window.pythos.promptAssistant(prompt).catch((reason: unknown) => {
-      setError(`Typed prompt failed: ${String(reason)}`);
+    window.pythos.getConfig().then((loadedConfig) => {
+      setConfig(loadedConfig);
+      setSettingsDraft(loadedConfig);
+      setShowStats(Boolean(loadedConfig.gui?.showPerformanceStats));
+      setConfigSummary(formatRuntimeSummary(loadedConfig, piStatus));
+    }).catch((reason: unknown) => {
+      setError(`Config load failed: ${String(reason)}`);
       setState("error");
     });
-  };
 
-  const sendQuickReply = (text: string) => {
-    setTypedPrompt(text);
-    setTimeout(() => {
-      promptRef.current?.form?.requestSubmit();
-    }, 0);
-  };
+    window.pythos.getPiStatus().then((status) => setPiStatus(status)).catch((reason: unknown) => {
+      setPiStatus({ enabled: false, available: false, running: false, command: null, args: [], reason: `Pi status failed: ${String(reason)}` });
+    });
 
-  const clearContext = () => {
-    setConversation([]);
-    setToolEvents([]);
-    setStreamingText(null);
-    window.pythos?.clearAssistantContext();
-  };
+    window.pythos.getMcpStatus?.().then((status) => setMcpStatus(status)).catch(() => {
+      setMcpStatus({ enabled: false, servers: [] });
+    });
 
-  const exportTranscript = () => {
-    const data = {
-      exportedAt: new Date().toISOString(),
-      conversation,
-      toolEvents: toolEvents.map((event) => ({ type: event.type, payload: event.payload }))
+    const offWorker = window.pythos.onWorkerEvent(handleWorkerEvent);
+    const offPi = window.pythos.onPiEvent(handlePiEvent);
+    const offPiStatus = window.pythos.onPiStatus((status) => setPiStatus(status));
+    const offMcpStatus = window.pythos.onMcpStatus?.((status) => setMcpStatus(status)) ?? (() => {});
+    const offState = window.pythos.onAssistantState((next) => setState(next as AssistantState));
+    const offStats = window.pythos.onModelStats((stats) => setModelStats(stats));
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
+        if (event.key === "Escape") (event.target as HTMLElement).blur();
+        return;
+      }
+      if (event.key === " " || event.code === "Space") {
+        event.preventDefault();
+        toggleMic();
+      } else if (event.key === "w" || event.key === "W") {
+        toggleWakeword();
+      } else if (event.key === "Escape") {
+        stopAll();
+      } else if (event.key === "/" || event.key === "?") {
+        event.preventDefault();
+        promptRef.current?.focus();
+      } else if (event.key === "," || event.key === "<") {
+        openSettings();
+      }
     };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `pythos-transcript-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+    window.addEventListener("keydown", onKeyDown);
 
-  const openSettings = () => {
-    setSettingsDraft(config ? structuredClone(config) : null);
-    setActiveTab("general");
-    setSettingsOpen(true);
-  };
+    return () => {
+      offWorker();
+      offPi();
+      offPiStatus();
+      offMcpStatus();
+      offState();
+      offStats();
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("keydown", onKeyDown);
+      if (toolFlashTimer.current !== null) window.clearTimeout(toolFlashTimer.current);
+    };
+  }, []);
 
-  const saveSettings = async () => {
-    if (!settingsDraft || !window.pythos) return;
-    const saved = await window.pythos.saveConfig(settingsDraft);
-    const nextPiStatus = await window.pythos.getPiStatus();
-    const nextMcpStatus = await window.pythos.getMcpStatus?.().catch(() => null);
-    setConfig(saved);
-    setSettingsDraft(structuredClone(saved));
-    setPiStatus(nextPiStatus);
-    setMcpStatus(nextMcpStatus);
-    setConfigSummary(formatRuntimeSummary(saved, nextPiStatus));
-    setShowStats(Boolean(saved.gui?.showPerformanceStats));
-    setSettingsOpen(false);
-    setError(null);
-  };
+  useEffect(() => {
+    if (config) setConfigSummary(formatRuntimeSummary(config, piStatus));
+  }, [config, piStatus]);
 
-  const startResize = (event: React.MouseEvent) => {
-    resizeStartX.current = event.clientX;
-    resizeStartWidth.current = sideWidth;
-    setIsResizing(true);
-  };
-
-  const visibleConversation = streamingText && !searchQuery.trim()
-    ? [...filteredConversation, { id: streamingText.id, role: "assistant" as const, text: streamingText.text, timestamp: Date.now() }]
-    : filteredConversation;
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (event: MouseEvent) => {
+      const next = Math.min(Math.max(resizeStartWidth.current + resizeStartX.current - event.clientX, 300), 600);
+      setSideWidth(next);
+      document.documentElement.style.setProperty("--side-width", `${next}px`);
+    };
+    const onUp = () => {
+      setIsResizing(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [isResizing]);
 
   return (
     <main className="app-shell" style={{ "--side-width": `${sideWidth}px` } as React.CSSProperties}>
       <section className="stage">
-        <header className="topbar">
-          <div className="title-block">
-            <p className="eyebrow">
-              <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
-              Pythos v3
-            </p>
-            <h1>{statusText}</h1>
-          </div>
-          <div className="status-chips">
-            <div className="status-pill" title="Local model">
-              <Activity size={14} />
-              {configSummary}
-            </div>
-            <div className="status-pill" title="Pi status">
-              <Bot size={14} />
-              {formatPiStatus(piStatus)}
-            </div>
-            {mcpStatus?.enabled && (
-              <div className="status-pill" title="MCP servers">
-                <Wrench size={14} />
-                {mcpStatus.servers.filter((s) => s.connected).length}/{mcpStatus.servers.length} MCP
-              </div>
-            )}
-          </div>
-        </header>
+        <TopBar
+          state={state}
+          statusText={statusText}
+          configSummary={configSummary}
+          piStatus={piStatus}
+          mcpStatus={mcpStatus}
+          online={online}
+          modelStats={modelStats}
+          showPerf={Boolean(config?.gui?.showPerformanceStats)}
+        />
 
-        <div className="demo-hud" aria-label="Runtime status">
-          <span className="demo-badge on-device">● All inference on-device</span>
-          {!online && (
-            <span className="demo-badge offline">
-              <WifiOff size={14} />
-              Network offline — Gemma brain still local
-            </span>
-          )}
-          {modelStats?.thinking && (
-            <span className="demo-badge thinking">
-              <Cpu size={14} />
-              Adaptive thinking{modelStats.thinkReason ? `: ${modelStats.thinkReason}` : ""}
-            </span>
-          )}
-          {config?.gui.showPerformanceStats && modelStats && modelStats.tokensPerSecond > 0 && (
-            <span className="demo-badge perf">
-              <Cpu size={14} />
-              {modelStats.tokensPerSecond} tok/s · TTFT {modelStats.ttftSeconds}s
-            </span>
-          )}
-        </div>
+        <OrbStage
+          state={state}
+          audioLevel={audioLevel}
+          toolFlashActive={toolFlashActive}
+          showStats={showStats}
+          uptime={uptime}
+          conversationLength={conversation.length}
+          connectedNodes={connectedNodes}
+          onInspect={setInspectingNode}
+          onToggle={state === "listening" ? stopAll : toggleMic}
+        />
 
-        <div
-          className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
-          style={{ "--level": audioLevel } as React.CSSProperties}
-          onClick={() => {
-            if (state === "idle" || state === "wakeword") {
-              toggleMic();
-            } else if (state === "listening") {
-              stopAll();
-            }
-          }}
-          role="button"
-          tabIndex={0}
-          aria-label={state === "listening" ? "Stop listening" : "Start push to talk"}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              if (state === "listening") stopAll();
-              else toggleMic();
-            }
-          }}
-        >
-          {showStats && (
-            <div className="performance-stats">
-              {uptime} up · {conversation.length} msgs · {connectedNodes.length} nodes
-            </div>
-          )}
-          <div className="orb-glow" />
-          <div className="node-orbits" aria-label="Connected nodes">
-            {connectedNodes.map((node, index) => (
-              <NodeOrbit
-                node={node}
-                index={index}
-                count={connectedNodes.length}
-                key={node.id}
-                onInspect={() => setInspectingNode(node)}
-              />
-            ))}
-          </div>
-          <div className="orb">
-            <div className="orb-core" />
-            <div className="pulse-ring one" />
-            <div className="pulse-ring two" />
-          </div>
-          <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
-        </div>
-
-        <div className="controls" aria-label="Voice controls">
-          <button
-            className={voiceButtonClass("wakeword", wakeSessionArmed || state === "wakeword", pendingVoiceAction)}
-            onClick={toggleWakeword}
-            title={wakeSessionArmed || state === "wakeword" ? "Stop wake word (W)" : "Arm wake word (W)"}
-            aria-pressed={wakeSessionArmed || state === "wakeword"}
-            data-label="Wake"
-          >
-            <Radio size={20} />
-          </button>
-          <button
-            className={voiceButtonClass("mic", state === "listening", pendingVoiceAction)}
-            onClick={toggleMic}
-            title={state === "listening" ? "Stop listening (Space)" : "Start push to talk (Space)"}
-            aria-pressed={state === "listening"}
-            data-label="Talk"
-          >
-            {state === "listening" ? <MicOff size={20} /> : <Mic size={20} />}
-          </button>
-          <button className="icon-button" onClick={stopAll} title="Stop current work (Esc)" data-label="Stop">
-            <Square size={20} />
-          </button>
-          <button className="icon-button" onClick={clearContext} title="Clear transcript and context" data-label="Clear">
-            <Trash2 size={20} />
-          </button>
-          <button className="icon-button" onClick={() => window.pythos?.getPiCommands()} title="Refresh Pi tools" data-label="Tools">
-            <Wrench size={20} />
-          </button>
-          <button className="icon-button" onClick={openSettings} title="Settings (,)" data-label="Settings">
-            <Settings size={20} />
-          </button>
-        </div>
-
-        <div className="shortcuts-hint">
-          <span><kbd>Space</kbd> Talk</span>
-          <span><kbd>W</kbd> Wake</span>
-          <span><kbd>Esc</kbd> Stop</span>
-          <span><kbd>/</kbd> Type</span>
-          <span><kbd>,</kbd> Settings</span>
-        </div>
-
-        <form className="text-prompt" onSubmit={submitTypedPrompt}>
-          <input
-            ref={promptRef}
-            value={typedPrompt}
-            onChange={(event) => setTypedPrompt(event.target.value)}
-            placeholder="Type to Pythos"
-            aria-label="Type a prompt"
-          />
-          <button className="text-send" type="submit" title="Send typed prompt" disabled={!typedPrompt.trim()}>
-            <Send size={18} />
-          </button>
-        </form>
-
-        <div className="quick-replies">
-          {QUICK_REPLIES.map((text) => (
-            <button key={text} className="quick-reply" onClick={() => sendQuickReply(text)}>
-              {text}
-            </button>
-          ))}
-        </div>
+        <ControlDock
+          state={state}
+          wakeSessionArmed={wakeSessionArmed}
+          pendingVoiceAction={pendingVoiceAction}
+          typedPrompt={typedPrompt}
+          onToggleWakeword={toggleWakeword}
+          onToggleMic={toggleMic}
+          onStop={stopAll}
+          onClear={clearContext}
+          onSettings={openSettings}
+          onTypedPromptChange={setTypedPrompt}
+          onSubmit={submitTypedPrompt}
+          onQuickReply={sendQuickReply}
+          promptRef={promptRef}
+        />
 
         {error && (
           <div className="error-banner">
@@ -658,313 +480,613 @@ export function App() {
         )}
       </section>
 
-      <aside className="side-panel">
-        <div
-          className={`resize-handle ${isResizing ? "dragging" : ""}`}
-          onMouseDown={startResize}
-          title="Drag to resize"
-        />
-
-        <section className="panel-section">
-          <header>
-            <h2><MessageSquare size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Conversation</h2>
-            <div className="panel-actions">
-              <div className="search-bar">
-                <Search size={13} />
-                <input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search..."
-                  aria-label="Search transcript"
-                />
-              </div>
-              <button className="panel-action" onClick={exportTranscript} title="Export transcript">
-                <Download size={14} />
-              </button>
-              <button className="panel-action" onClick={clearContext} title="Clear transcript">
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </header>
-          <div className="conversation-list">
-            {visibleConversation.length === 0 ? (
-              <div className="empty-state">
-                <MessageSquare size={32} />
-                <p>No transcript yet</p>
-                <small>Speak or type to start a conversation.</small>
-              </div>
-            ) : (
-              visibleConversation.map((item) => (
-                <article className={`message ${item.role}`} key={item.id}>
-                  <header>
-                    <span>{roleLabel(item.role)}</span>
-                    <time>{formatTime(item.timestamp)}</time>
-                  </header>
-                  <p className={streamingText?.id === item.id ? "streaming" : ""}>{item.text}</p>
-                </article>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="panel-section">
-          <h2>MCP Connectors</h2>
-          <div className="mcp-list">
-            {!mcpStatus?.enabled || !mcpStatus.servers.length ? (
-              <p className="muted">MCP disabled or no servers configured.</p>
-            ) : (
-              mcpStatus.servers.map((server) => (
-                <div
-                  className={`mcp-row ${server.connected ? "connected" : "disconnected"}`}
-                  key={server.name}
-                >
-                  <span>
-                    {server.name} ({server.toolCount} tools)
-                  </span>
-                  <span>{server.connected ? "connected" : server.error ?? "offline"}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="panel-section">
-          <header>
-            <h2><Zap size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Tool Timeline</h2>
-            <div className="panel-actions">
-              <button className="panel-action" onClick={() => setToolEvents([])} title="Clear tool events">
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </header>
-          <div className="tool-list">
-            {filteredToolEvents.length === 0 ? (
-              <div className="empty-state">
-                <Wrench size={32} />
-                <p>Tool events will appear here</p>
-                <small>Pi events, MCP calls, and local tools show in this timeline.</small>
-              </div>
-            ) : (
-              filteredToolEvents.map((event, index) => (
-                <ToolEventCard event={event} key={`${event.type}-${index}`} />
-              ))
-            )}
-          </div>
-        </section>
-      </aside>
+      <SidePanel
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        visibleConversation={visibleConversation}
+        streamingText={streamingText}
+        toolEvents={filteredToolEvents}
+        mcpStatus={mcpStatus}
+        onExport={exportTranscript}
+        onClear={clearContext}
+        onClearToolEvents={() => setToolEvents([])}
+        onInspect={setInspectingNode}
+        isResizing={isResizing}
+        onResizeStart={startResize}
+      />
 
       {settingsOpen && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}>
-          <section
-            className="settings-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Settings"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className="settings-header">
-              <div>
-                <p className="eyebrow">Runtime</p>
-                <h2>Settings</h2>
-              </div>
-              <button className="text-button" onClick={() => setSettingsOpen(false)}>
-                Close
-              </button>
-            </header>
-
-            <div className="settings-tabs" role="tablist">
-              {(["general", "audio", "tools", "paths"] as SettingsTab[]).map((tab) => (
-                <button
-                  key={tab}
-                  className={`settings-tab ${activeTab === tab ? "active" : ""}`}
-                  role="tab"
-                  aria-selected={activeTab === tab}
-                  onClick={() => setActiveTab(tab)}
-                >
-                  {tab[0].toUpperCase() + tab.slice(1)}
-                </button>
-              ))}
-            </div>
-
-            {activeTab === "general" && (
-              <div className="settings-grid">
-                <Setting label="Assistant state" value={state} />
-                <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-                <Setting label="Brain" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
-                <SettingSelect
-                  label="Adaptive thinking"
-                  value={settingsDraft?.ollama?.think ?? "auto"}
-                  options={[
-                    { label: "Auto (task-based)", value: "auto" },
-                    { label: "Always on", value: "on" },
-                    { label: "Always off (fastest)", value: "off" }
-                  ]}
-                  onChange={(value) =>
-                    updateDraft(setSettingsDraft, ["ollama", "think"], value as ThinkMode)
-                  }
-                />
-                <SettingSelect
-                  label="Visualizer style"
-                  value={settingsDraft?.gui?.visualizer ?? "orb"}
-                  options={[
-                    { label: "Orb", value: "orb" },
-                    { label: "Compact", value: "compact" },
-                    { label: "Minimal", value: "minimal" }
-                  ]}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "visualizer"], value)}
-                />
-                <SettingNumber
-                  label="Max transcript items"
-                  value={Number(settingsDraft?.gui?.maxTranscriptItems ?? 100)}
-                  min={20}
-                  max={500}
-                  step={10}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "maxTranscriptItems"], value)}
-                />
-                <SettingToggle
-                  label="Show performance stats"
-                  checked={Boolean(settingsDraft?.gui?.showPerformanceStats)}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "showPerformanceStats"], value)}
-                />
-                <SettingInput
-                  label="Ollama endpoint"
-                  value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "baseUrl"], value)}
-                />
-                <SettingInput
-                  label="Low-resource model"
-                  value={settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "lowResourceModel"], value)}
-                />
-                <SettingToggle
-                  label={`Low resource mode (${settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"})`}
-                  checked={Boolean(settingsDraft?.python?.lowResourceMode)}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["python", "lowResourceMode"], value)}
-                />
-              </div>
-            )}
-
-            {activeTab === "audio" && (
-              <div className="settings-grid">
-                <SettingInput
-                  label="Wake word"
-                  value={String(settingsDraft?.audio?.wakeWord ?? "")}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeWord"], value)}
-                />
-                <SettingNumber
-                  label="Wake threshold"
-                  value={Number(settingsDraft?.audio?.wakeThreshold ?? 0.5)}
-                  min={0.1}
-                  max={0.95}
-                  step={0.05}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeThreshold"], value)}
-                />
-                <SettingNumber
-                  label="Speech speed"
-                  value={Number(settingsDraft?.audio?.ttsLengthScale ?? 0.8)}
-                  min={0.5}
-                  max={1.6}
-                  step={0.05}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "ttsLengthScale"], value)}
-                  hint="Lower is faster"
-                />
-                <SettingNumber
-                  label="ASR timeout"
-                  value={Number(settingsDraft?.audio?.asrTimeoutSeconds ?? 10)}
-                  min={3}
-                  max={30}
-                  step={1}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "asrTimeoutSeconds"], value)}
-                />
-                <SettingNumber
-                  label="Silence timeout"
-                  value={Number(settingsDraft?.audio?.silenceTimeoutSeconds ?? 3)}
-                  min={1}
-                  max={10}
-                  step={0.5}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "silenceTimeoutSeconds"], value)}
-                />
-              </div>
-            )}
-
-            {activeTab === "tools" && (
-              <div className="settings-grid">
-                <SettingToggle
-                  label="Experimental Pi tools"
-                  checked={Boolean(settingsDraft?.pi?.enabled)}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["pi", "enabled"], value)}
-                />
-                <SettingInput
-                  label="Pi command"
-                  value={settingsDraft?.pi?.command ?? "pi"}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["pi", "command"], value)}
-                />
-                <SettingInput
-                  label="Spotify client ID"
-                  value={settingsDraft?.spotify?.clientId ?? ""}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "clientId"], value)}
-                />
-                <SettingInput
-                  label="Spotify redirect URI"
-                  value={settingsDraft?.spotify?.redirectUri ?? "http://127.0.0.1:8888/callback"}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "redirectUri"], value)}
-                />
-                <SettingToggle
-                  label="MCP servers"
-                  checked={Boolean(settingsDraft?.mcp?.enabled)}
-                  onChange={(value) => updateDraft(setSettingsDraft, ["mcp", "enabled"], value)}
-                />
-              </div>
-            )}
-
-            {activeTab === "paths" && (
-              <section className="settings-block">
-                <h3>Model Paths</h3>
-                <div className="path-list">
-                  {config?.models ? (
-                    Object.entries(config.models).map(([key, value]) => (
-                      <div className="path-row" key={key}>
-                        <span>{key}</span>
-                        <code>{value}</code>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="muted">No model paths loaded.</p>
-                  )}
-                </div>
-              </section>
-            )}
-
-            <div className="settings-actions">
-              <span>{formatPiCommand(settingsDraft ?? config)}</span>
-              <button className="text-button save" onClick={saveSettings}>
-                <Save size={16} />
-                Save
-              </button>
-            </div>
-          </section>
-        </div>
+        <SettingsModal
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          state={state}
+          piStatus={piStatus}
+          config={config}
+          settingsDraft={settingsDraft}
+          onDraftChange={setSettingsDraft}
+          onClose={() => setSettingsOpen(false)}
+          onSave={saveSettings}
+        />
       )}
 
       {inspectingNode && (
-        <div className="node-inspector">
-          <header>
-            <h4>{inspectingNode.label}</h4>
-            <button className="panel-action" onClick={() => setInspectingNode(null)}>
-              <X size={14} />
-            </button>
-          </header>
-          <dl>
-            <dt>ID</dt>
-            <dd>{inspectingNode.id}</dd>
-            <dt>Status</dt>
-            <dd>{formatNodeStatus(inspectingNode.status)}</dd>
-            <dt>Last seen</dt>
-            <dd>{formatTime(inspectingNode.lastSeen)}</dd>
-          </dl>
-        </div>
+        <NodeInspector node={inspectingNode} onClose={() => setInspectingNode(null)} />
       )}
     </main>
+  );
+}
+
+function TopBar({
+  state,
+  statusText,
+  configSummary,
+  piStatus,
+  mcpStatus,
+  online,
+  modelStats,
+  showPerf
+}: {
+  state: AssistantState;
+  statusText: string;
+  configSummary: string;
+  piStatus: PiStatus | null;
+  mcpStatus: McpStatus | null;
+  online: boolean;
+  modelStats: ModelStats | null;
+  showPerf: boolean;
+}) {
+  return (
+    <header className="topbar">
+      <div className="title-block">
+        <p className="eyebrow">
+          <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
+          Pythos v3
+        </p>
+        <h1>{statusText}</h1>
+      </div>
+      <div className="status-chips">
+        <div className="status-pill" title="Local model">
+          <Activity size={14} />
+          {configSummary}
+        </div>
+        <div className="status-pill" title="Pi status">
+          <Bot size={14} />
+          {formatPiStatus(piStatus)}
+        </div>
+        {mcpStatus?.enabled && (
+          <div className="status-pill" title="MCP servers">
+            <Wrench size={14} />
+            {mcpStatus.servers.filter((s) => s.connected).length}/{mcpStatus.servers.length} MCP
+          </div>
+        )}
+        {!online && (
+          <div className="status-pill offline" title="Network status">
+            <WifiOff size={14} />
+            Offline
+          </div>
+        )}
+        {modelStats?.thinking && (
+          <div className="status-pill thinking" title="Thinking mode">
+            <Cpu size={14} />
+            {modelStats.thinkReason ? `Thinking: ${modelStats.thinkReason}` : "Thinking"}
+          </div>
+        )}
+        {showPerf && modelStats && modelStats.tokensPerSecond > 0 && (
+          <div className="status-pill perf" title="Performance">
+            <Cpu size={14} />
+            {modelStats.tokensPerSecond} tok/s · TTFT {modelStats.ttftSeconds}s
+          </div>
+        )}
+      </div>
+    </header>
+  );
+}
+
+function OrbStage({
+  state,
+  audioLevel,
+  toolFlashActive,
+  showStats,
+  uptime,
+  conversationLength,
+  connectedNodes,
+  onInspect,
+  onToggle
+}: {
+  state: AssistantState;
+  audioLevel: number;
+  toolFlashActive: boolean;
+  showStats: boolean;
+  uptime: string;
+  conversationLength: number;
+  connectedNodes: ConnectedNode[];
+  onInspect: (node: ConnectedNode) => void;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
+      style={{ "--level": audioLevel } as React.CSSProperties}
+      onClick={onToggle}
+      role="button"
+      tabIndex={0}
+      aria-label={state === "listening" ? "Stop listening" : "Start push to talk"}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle();
+        }
+      }}
+    >
+      {showStats && (
+        <div className="performance-stats">
+          {uptime} up · {conversationLength} msgs · {connectedNodes.length} nodes
+        </div>
+      )}
+      <div className="orb-glow" />
+      <div className="node-orbits" aria-label="Connected nodes">
+        {connectedNodes.map((node, index) => (
+          <NodeOrbit node={node} index={index} count={connectedNodes.length} key={node.id} onInspect={() => onInspect(node)} />
+        ))}
+      </div>
+      <div className="orb">
+        <div className="orb-core" />
+        <div className="pulse-ring one" />
+        <div className="pulse-ring two" />
+      </div>
+      <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
+    </div>
+  );
+}
+
+function ControlDock({
+  state,
+  wakeSessionArmed,
+  pendingVoiceAction,
+  typedPrompt,
+  onToggleWakeword,
+  onToggleMic,
+  onStop,
+  onClear,
+  onSettings,
+  onTypedPromptChange,
+  onSubmit,
+  onQuickReply,
+  promptRef
+}: {
+  state: AssistantState;
+  wakeSessionArmed: boolean;
+  pendingVoiceAction: VoiceAction | null;
+  typedPrompt: string;
+  onToggleWakeword: () => void;
+  onToggleMic: () => void;
+  onStop: () => void;
+  onClear: () => void;
+  onSettings: () => void;
+  onTypedPromptChange: (value: string) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onQuickReply: (text: string) => void;
+  promptRef: React.RefObject<HTMLInputElement | null>;
+}) {
+  return (
+    <div className="control-dock">
+      <div className="controls" aria-label="Voice controls">
+        <button
+          className={voiceButtonClass("wakeword", wakeSessionArmed || state === "wakeword", pendingVoiceAction)}
+          onClick={onToggleWakeword}
+          title={wakeSessionArmed || state === "wakeword" ? "Stop wake word (W)" : "Arm wake word (W)"}
+          aria-pressed={wakeSessionArmed || state === "wakeword"}
+          data-label="Wake"
+        >
+          <Radio size={20} />
+        </button>
+        <button
+          className={voiceButtonClass("mic", state === "listening", pendingVoiceAction)}
+          onClick={onToggleMic}
+          title={state === "listening" ? "Stop listening (Space)" : "Start push to talk (Space)"}
+          aria-pressed={state === "listening"}
+          data-label="Talk"
+        >
+          {state === "listening" ? <MicOff size={20} /> : <Mic size={20} />}
+        </button>
+        <button className="icon-button" onClick={onStop} title="Stop current work (Esc)" data-label="Stop">
+          <Square size={20} />
+        </button>
+        <button className="icon-button" onClick={onClear} title="Clear transcript and context" data-label="Clear">
+          <Trash2 size={20} />
+        </button>
+        <button className="icon-button" onClick={() => window.pythos?.getPiCommands()} title="Refresh Pi tools" data-label="Tools">
+          <Wrench size={20} />
+        </button>
+        <button className="icon-button" onClick={onSettings} title="Settings (,)" data-label="Settings">
+          <Settings size={20} />
+        </button>
+      </div>
+
+      <div className="shortcuts-hint">
+        <span><kbd>Space</kbd> Talk</span>
+        <span><kbd>W</kbd> Wake</span>
+        <span><kbd>Esc</kbd> Stop</span>
+        <span><kbd>/</kbd> Type</span>
+        <span><kbd>,</kbd> Settings</span>
+      </div>
+
+      <form className="text-prompt" onSubmit={onSubmit}>
+        <input
+          ref={promptRef}
+          value={typedPrompt}
+          onChange={(event) => onTypedPromptChange(event.target.value)}
+          placeholder="Type to Pythos"
+          aria-label="Type a prompt"
+        />
+        <button className="text-send" type="submit" title="Send typed prompt" disabled={!typedPrompt.trim()}>
+          <Send size={18} />
+        </button>
+      </form>
+
+      <div className="quick-replies">
+        {QUICK_REPLIES.map((text) => (
+          <button key={text} className="quick-reply" onClick={() => onQuickReply(text)}>
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SidePanel({
+  searchQuery,
+  onSearchChange,
+  visibleConversation,
+  streamingText,
+  toolEvents,
+  mcpStatus,
+  onExport,
+  onClear,
+  onClearToolEvents,
+  onInspect,
+  isResizing,
+  onResizeStart
+}: {
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  visibleConversation: ConversationItem[];
+  streamingText: { id: string; text: string } | null;
+  toolEvents: PiEvent[];
+  mcpStatus: McpStatus | null;
+  onExport: () => void;
+  onClear: () => void;
+  onClearToolEvents: () => void;
+  onInspect: (node: ConnectedNode) => void;
+  isResizing: boolean;
+  onResizeStart: (event: React.MouseEvent) => void;
+}) {
+  return (
+    <aside className="side-panel">
+      <div className={`resize-handle ${isResizing ? "dragging" : ""}`} onMouseDown={onResizeStart} title="Drag to resize" />
+
+      <section className="panel-section conversation-section">
+        <header>
+          <h2><MessageSquare size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Conversation</h2>
+          <div className="panel-actions">
+            <div className="search-bar">
+              <Search size={13} />
+              <input
+                value={searchQuery}
+                onChange={(event) => onSearchChange(event.target.value)}
+                placeholder="Search..."
+                aria-label="Search transcript"
+              />
+            </div>
+            <button className="panel-action" onClick={onExport} title="Export transcript">
+              <Download size={14} />
+            </button>
+            <button className="panel-action" onClick={onClear} title="Clear transcript">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </header>
+        <div className="conversation-list">
+          {visibleConversation.length === 0 ? (
+            <div className="empty-state">
+              <MessageSquare size={32} />
+              <p>No transcript yet</p>
+              <small>Speak or type to start a conversation.</small>
+            </div>
+          ) : (
+            visibleConversation.map((item) => (
+              <article className={`message ${item.role}`} key={item.id}>
+                <header>
+                  <span>{roleLabel(item.role)}</span>
+                  <time>{formatTime(item.timestamp)}</time>
+                </header>
+                <p className={streamingText?.id === item.id ? "streaming" : ""}>{item.text}</p>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="panel-section compact-section">
+        <header>
+          <h2><Wrench size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />MCP Connectors</h2>
+          <span className="panel-meta">{mcpStatus?.enabled ? `${mcpStatus.servers.filter((s) => s.connected).length}/${mcpStatus.servers.length} connected` : "disabled"}</span>
+        </header>
+        <div className="mcp-list">
+          {!mcpStatus?.enabled || !mcpStatus.servers.length ? (
+            <p className="muted">MCP disabled or no servers configured.</p>
+          ) : (
+            mcpStatus.servers.map((server) => (
+              <div className={`mcp-row ${server.connected ? "connected" : "disconnected"}`} key={server.name}>
+                <span>{server.name} ({server.toolCount} tools)</span>
+                <span>{server.connected ? "connected" : server.error ?? "offline"}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="panel-section">
+        <header>
+          <h2><Zap size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Tool Timeline</h2>
+          <div className="panel-actions">
+            <button className="panel-action" onClick={onClearToolEvents} title="Clear tool events">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </header>
+        <div className="tool-list">
+          {toolEvents.length === 0 ? (
+            <div className="empty-state">
+              <Wrench size={32} />
+              <p>Tool events will appear here</p>
+              <small>Pi events, MCP calls, and local tools show in this timeline.</small>
+            </div>
+          ) : (
+            toolEvents.map((event, index) => <ToolEventCard event={event} key={`${event.type}-${index}`} />)
+          )}
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function SettingsModal({
+  activeTab,
+  onTabChange,
+  state,
+  piStatus,
+  config,
+  settingsDraft,
+  onDraftChange,
+  onClose,
+  onSave
+}: {
+  activeTab: SettingsTab;
+  onTabChange: (tab: SettingsTab) => void;
+  state: AssistantState;
+  piStatus: PiStatus | null;
+  config: AppConfig | null;
+  settingsDraft: AppConfig | null;
+  onDraftChange: React.Dispatch<React.SetStateAction<AppConfig | null>>;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const tabs: SettingsTab[] = ["general", "audio", "tools", "paths"];
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="Settings" onClick={(event) => event.stopPropagation()}>
+        <header className="settings-header">
+          <div>
+            <p className="eyebrow">Runtime</p>
+            <h2>Settings</h2>
+          </div>
+          <button className="text-button" onClick={onClose}>Close</button>
+        </header>
+
+        <div className="settings-tabs" role="tablist">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              className={`settings-tab ${activeTab === tab ? "active" : ""}`}
+              role="tab"
+              aria-selected={activeTab === tab}
+              onClick={() => onTabChange(tab)}
+            >
+              {tab[0].toUpperCase() + tab.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "general" && (
+          <div className="settings-grid single-col">
+            <Setting label="Assistant state" value={state} />
+            <Setting label="Pi status" value={formatPiStatus(piStatus)} />
+            <Setting label="Brain" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
+            <SettingSelect
+              label="Adaptive thinking"
+              value={settingsDraft?.ollama?.think ?? "auto"}
+              options={[
+                { label: "Auto (task-based)", value: "auto" },
+                { label: "Always on", value: "on" },
+                { label: "Always off (fastest)", value: "off" }
+              ]}
+              onChange={(value) => updateDraft(onDraftChange, ["ollama", "think"], value as ThinkMode)}
+            />
+            <SettingSelect
+              label="Thinking depth"
+              value={settingsDraft?.ollama?.thinkLevel ?? "medium"}
+              options={[
+                { label: "None", value: "none" },
+                { label: "Low", value: "low" },
+                { label: "Medium", value: "medium" },
+                { label: "High", value: "high" }
+              ]}
+              onChange={(value) => updateDraft(onDraftChange, ["ollama", "thinkLevel"], value as ThinkLevel)}
+            />
+            <SettingSelect
+              label="Visualizer style"
+              value={settingsDraft?.gui?.visualizer ?? "orb"}
+              options={[
+                { label: "Orb", value: "orb" },
+                { label: "Compact", value: "compact" },
+                { label: "Minimal", value: "minimal" }
+              ]}
+              onChange={(value) => updateDraft(onDraftChange, ["gui", "visualizer"], value)}
+            />
+            <SettingNumber
+              label="Max transcript items"
+              value={Number(settingsDraft?.gui?.maxTranscriptItems ?? 100)}
+              min={20}
+              max={500}
+              step={10}
+              onChange={(value) => updateDraft(onDraftChange, ["gui", "maxTranscriptItems"], value)}
+            />
+            <SettingToggle
+              label="Show performance stats"
+              checked={Boolean(settingsDraft?.gui?.showPerformanceStats)}
+              onChange={(value) => updateDraft(onDraftChange, ["gui", "showPerformanceStats"], value)}
+            />
+            <SettingInput
+              label="Ollama endpoint"
+              value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
+              onChange={(value) => updateDraft(onDraftChange, ["ollama", "baseUrl"], value)}
+            />
+            <SettingInput
+              label="Low-resource model"
+              value={settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"}
+              onChange={(value) => updateDraft(onDraftChange, ["ollama", "lowResourceModel"], value)}
+            />
+            <SettingToggle
+              label={`Low resource mode (${settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"})`}
+              checked={Boolean(settingsDraft?.python?.lowResourceMode)}
+              onChange={(value) => updateDraft(onDraftChange, ["python", "lowResourceMode"], value)}
+            />
+          </div>
+        )}
+
+        {activeTab === "audio" && (
+          <div className="settings-grid single-col">
+            <SettingInput
+              label="Wake word"
+              value={String(settingsDraft?.audio?.wakeWord ?? "")}
+              onChange={(value) => updateDraft(onDraftChange, ["audio", "wakeWord"], value)}
+            />
+            <SettingNumber
+              label="Wake threshold"
+              value={Number(settingsDraft?.audio?.wakeThreshold ?? 0.5)}
+              min={0.1}
+              max={0.95}
+              step={0.05}
+              onChange={(value) => updateDraft(onDraftChange, ["audio", "wakeThreshold"], value)}
+            />
+            <SettingNumber
+              label="Speech speed"
+              value={Number(settingsDraft?.audio?.ttsLengthScale ?? 0.8)}
+              min={0.5}
+              max={1.6}
+              step={0.05}
+              onChange={(value) => updateDraft(onDraftChange, ["audio", "ttsLengthScale"], value)}
+              hint="Lower is faster"
+            />
+            <SettingNumber
+              label="ASR timeout"
+              value={Number(settingsDraft?.audio?.asrTimeoutSeconds ?? 10)}
+              min={3}
+              max={30}
+              step={1}
+              onChange={(value) => updateDraft(onDraftChange, ["audio", "asrTimeoutSeconds"], value)}
+            />
+            <SettingNumber
+              label="Silence timeout"
+              value={Number(settingsDraft?.audio?.silenceTimeoutSeconds ?? 3)}
+              min={1}
+              max={10}
+              step={0.5}
+              onChange={(value) => updateDraft(onDraftChange, ["audio", "silenceTimeoutSeconds"], value)}
+            />
+          </div>
+        )}
+
+        {activeTab === "tools" && (
+          <div className="settings-grid single-col">
+            <SettingToggle
+              label="Experimental Pi tools"
+              checked={Boolean(settingsDraft?.pi?.enabled)}
+              onChange={(value) => updateDraft(onDraftChange, ["pi", "enabled"], value)}
+            />
+            <SettingInput
+              label="Pi command"
+              value={settingsDraft?.pi?.command ?? "pi"}
+              onChange={(value) => updateDraft(onDraftChange, ["pi", "command"], value)}
+            />
+            <SettingInput
+              label="Spotify client ID"
+              value={settingsDraft?.spotify?.clientId ?? ""}
+              onChange={(value) => updateDraft(onDraftChange, ["spotify", "clientId"], value)}
+            />
+            <SettingInput
+              label="Spotify redirect URI"
+              value={settingsDraft?.spotify?.redirectUri ?? "http://127.0.0.1:8888/callback"}
+              onChange={(value) => updateDraft(onDraftChange, ["spotify", "redirectUri"], value)}
+            />
+            <SettingToggle
+              label="MCP servers"
+              checked={Boolean(settingsDraft?.mcp?.enabled)}
+              onChange={(value) => updateDraft(onDraftChange, ["mcp", "enabled"], value)}
+            />
+          </div>
+        )}
+
+        {activeTab === "paths" && (
+          <section className="settings-block">
+            <h3>Model Paths</h3>
+            <div className="path-list">
+              {config?.models ? (
+                Object.entries(config.models).map(([key, value]) => (
+                  <div className="path-row" key={key}>
+                    <span>{key}</span>
+                    <code>{value}</code>
+                  </div>
+                ))
+              ) : (
+                <p className="muted">No model paths loaded.</p>
+              )}
+            </div>
+          </section>
+        )}
+
+        <div className="settings-actions">
+          <span>{formatPiCommand(settingsDraft ?? config)}</span>
+          <button className="text-button save" onClick={onSave}>
+            <Save size={16} />
+            Save
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NodeInspector({ node, onClose }: { node: ConnectedNode; onClose: () => void }) {
+  return (
+    <div className="node-inspector">
+      <header>
+        <h4>{node.label}</h4>
+        <button className="panel-action" onClick={onClose}>
+          <X size={14} />
+        </button>
+      </header>
+      <dl>
+        <dt>ID</dt>
+        <dd>{node.id}</dd>
+        <dt>Status</dt>
+        <dd>{formatNodeStatus(node.status)}</dd>
+        <dt>Last seen</dt>
+        <dd>{formatTime(node.lastSeen)}</dd>
+      </dl>
+    </div>
   );
 }
 
@@ -1056,15 +1178,7 @@ function voiceButtonClass(action: VoiceAction, active: boolean, pending: VoiceAc
   return classes.join(" ");
 }
 
-function SettingInput({
-  label,
-  value,
-  onChange
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
+function SettingInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="setting-row editable">
       <span>{label}</span>
@@ -1088,11 +1202,7 @@ function SettingSelect({
     <label className="setting-row editable">
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
   );
@@ -1127,15 +1237,7 @@ function SettingNumber({
   );
 }
 
-function SettingToggle({
-  label,
-  checked,
-  onChange
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
+function SettingToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
   return (
     <label className="setting-row editable toggle-row">
       <span>{label}</span>
@@ -1154,10 +1256,7 @@ function updateDraft(
     const next = structuredClone(current) as AppConfig;
     const nextRecord = next as unknown as Record<keyof AppConfig, unknown>;
     const existingGroup = nextRecord[path[0]];
-    const group =
-      existingGroup && typeof existingGroup === "object" && !Array.isArray(existingGroup)
-        ? (existingGroup as Record<string, unknown>)
-        : {};
+    const group = existingGroup && typeof existingGroup === "object" && !Array.isArray(existingGroup) ? (existingGroup as Record<string, unknown>) : {};
     nextRecord[path[0]] = group;
     group[path[1]] = value;
     return next;
@@ -1166,8 +1265,7 @@ function updateDraft(
 
 function extractAssistantText(payload: Record<string, unknown>): string {
   const text = payload.text ?? payload.content ?? payload.message;
-  if (typeof text === "string") return text;
-  return "";
+  return typeof text === "string" ? text : "";
 }
 
 function upsertAssistant(items: ConversationItem[], text: string, existingId?: string): ConversationItem[] {
@@ -1180,9 +1278,7 @@ function upsertAssistant(items: ConversationItem[], text: string, existingId?: s
     }
   }
   const last = items.at(-1);
-  if (last?.role === "assistant") {
-    return [...items.slice(0, -1), { ...last, text }];
-  }
+  if (last?.role === "assistant") return [...items.slice(0, -1), { ...last, text }];
   return [...items, { id: existingId ?? nowId(), role: "assistant", text, timestamp: Date.now() }];
 }
 
@@ -1201,23 +1297,16 @@ function updateConnectedNodes(nodes: ConnectedNode[], event: PiEvent): Connected
   const deviceId = typeof record.deviceId === "string" && record.deviceId.trim() ? record.deviceId.trim() : "";
   if (!deviceId) return nodes;
   const eventType = String(record.type ?? echoEvent.type);
-  if (eventType === "offline" || eventType === "disconnected") {
-    return nodes.filter((node) => node.id !== deviceId);
-  }
+  if (eventType === "offline" || eventType === "disconnected") return nodes.filter((node) => node.id !== deviceId);
   const existingIndex = nodes.findIndex((node) => node.id === deviceId);
   const existingNode = existingIndex >= 0 ? nodes[existingIndex] : null;
   if (echoEvent.type === "realtime_state" && !existingNode) return nodes;
   const label = extractNodeLabel(record, deviceId, existingNode?.label);
-  const status =
-    eventType === "audio_level" && existingNode
-      ? existingNode.status
-      : deriveNodeStatus(echoEvent.type, eventType, record);
+  const status = eventType === "audio_level" && existingNode ? existingNode.status : deriveNodeStatus(echoEvent.type, eventType, record);
   const nextNode: ConnectedNode = { id: deviceId, label, status, lastSeen: Date.now() };
-  const nextNodes =
-    existingIndex >= 0
-      ? nodes.map((node, index) => (index === existingIndex ? { ...node, ...nextNode } : node))
-      : [...nodes, nextNode];
-
+  const nextNodes = existingIndex >= 0
+    ? nodes.map((node, index) => (index === existingIndex ? { ...node, ...nextNode } : node))
+    : [...nodes, nextNode];
   return nextNodes.sort((left, right) => right.lastSeen - left.lastSeen).slice(0, 8);
 }
 
@@ -1231,20 +1320,14 @@ function extractEchoEvent(event: PiEvent): { type: string; payload: unknown } | 
 function extractNodeLabel(record: Record<string, unknown>, deviceId: string, fallbackLabel?: string): string {
   const candidates = [record.deviceName, record.name, record.label, record.friendlyName];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim().slice(0, 24);
-    }
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 24);
   }
   if (fallbackLabel) return fallbackLabel;
   if (/echo|alexa/i.test(deviceId)) return "Alexa";
   return deviceId.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 24);
 }
 
-function deriveNodeStatus(
-  echoType: string,
-  eventType: string,
-  record: Record<string, unknown>
-): NodeStatus {
+function deriveNodeStatus(echoType: string, eventType: string, record: Record<string, unknown>): NodeStatus {
   if (echoType === "error" || eventType === "error") return "error";
   const value = typeof record.value === "string" ? record.value : "";
   if (eventType === "listening" || eventType === "wake" || value === "listening" || value === "wakeword") return "listening";
@@ -1328,9 +1411,7 @@ function summarizeDebugEvent(record: Record<string, unknown>): string {
   const text = stringField(record, "text") || "Debug event";
   const parts = [text];
   for (const key of ["turnId", "source", "route", "tool", "reason", "model", "promptChars", "chars", "toolUsed"]) {
-    if (record[key] !== undefined && record[key] !== null && record[key] !== "") {
-      parts.push(`${key}=${formatEventValue(record[key])}`);
-    }
+    if (record[key] !== undefined && record[key] !== null && record[key] !== "") parts.push(`${key}=${formatEventValue(record[key])}`);
   }
   if (typeof record.prompt === "string") parts.push(`prompt=${formatEventValue(record.prompt)}`);
   if (record.args && typeof record.args === "object") parts.push(summarizeArgs(record.args as Record<string, unknown>));
@@ -1415,9 +1496,7 @@ function fullEventPayload(payload: unknown): string {
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
   const model = config.ollama?.model ?? "gemma4:12b";
-  if (config.pi?.enabled && status?.available) {
-    return `Gemma ${model} + Pi tools`;
-  }
+  if (config.pi?.enabled && status?.available) return `Gemma ${model} + Pi tools`;
   return `Gemma ${model}`;
 }
 
