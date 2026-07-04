@@ -39,6 +39,23 @@ export type ConversationItem = {
   timestamp: number;
 };
 
+/** How the local model chooses its thinking level. */
+export type ThinkMode = "auto" | "on" | "off";
+
+/** Per-request inference metrics reported by the local Ollama runtime. */
+export type ModelStats = {
+  model: string;
+  /** Generation speed in tokens per second. */
+  tokensPerSecond: number;
+  /** Time to first token (prompt eval + load) in seconds. */
+  ttftSeconds: number;
+  evalCount: number;
+  totalSeconds: number;
+  thinking: boolean;
+  thinkReason?: string;
+  at: number;
+};
+
 export type McpTransportKind = "stdio" | "http";
 
 export type McpServerConfig = {
@@ -87,7 +104,7 @@ export type AppConfig = {
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
-  ollama: { model: string; baseUrl?: string; lowResourceModel?: string };
+  ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AppConfig, McpStatus, PiEvent, PiStatus, WorkerEvent } from "../shared/types.js";
+import type { AppConfig, McpStatus, ModelStats, PiEvent, PiStatus, WorkerEvent } from "../shared/types.js";
 
 const api = {
   startListening: () => ipcRenderer.invoke("worker:startListening") as Promise<void>,
@@ -42,6 +42,11 @@ const api = {
     const listener = (_: Electron.IpcRendererEvent, state: string) => callback(state);
     ipcRenderer.on("assistant:state", listener);
     return () => ipcRenderer.off("assistant:state", listener);
+  },
+  onModelStats: (callback: (stats: ModelStats) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, stats: ModelStats) => callback(stats);
+    ipcRenderer.on("model:stats", listener);
+    return () => ipcRenderer.off("model:stats", listener);
   }
 };
 

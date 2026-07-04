@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readConfig, writeConfig } from "./config.js";
 import { analyzeImageWithOllama, generateWithOllama, resolveActiveModel } from "./ollamaClient.js";
+import { ensureOllamaReady } from "./ollamaRuntime.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
@@ -22,7 +23,7 @@ import { EchoBridge, type EchoBridgeEvent, type EchoPromptReply } from "./echoBr
 import { createExternalLocalToolServices } from "./externalServices.js";
 import { UserMemoryStore } from "./userMemory.js";
 import { isRetryPrompt } from "./toolRetry.js";
-import type { McpStatus, WorkerEvent } from "../shared/types.js";
+import type { McpStatus, ModelStats, WorkerEvent } from "../shared/types.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 let config = readConfig();
@@ -80,6 +81,14 @@ const localToolServices: LocalToolServices = {
   }
 };
 
+function broadcastModelStats(stats: ModelStats): void {
+  debug(
+    `model stats model=${stats.model} tok/s=${stats.tokensPerSecond} ttft=${stats.ttftSeconds}s ` +
+      `tokens=${stats.evalCount} thinking=${stats.thinking}${stats.thinkReason ? ` (${stats.thinkReason})` : ""}`
+  );
+  broadcast("model:stats", stats);
+}
+
 function broadcast(channel: string, payload: unknown): void {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     return;
@@ -133,6 +142,16 @@ app.whenReady().then(() => {
   pythonWorker.start();
   echoBridge.start();
   void mcp.init().catch((error) => debug(`mcp init failed ${String(error)}`));
+  void ensureOllamaReady(config).then((result) => {
+    debug(`ollama ensure ready=${result.ready} model=${result.model} msg=${result.message}`);
+    broadcast("ollama:status", result);
+    if (!result.ready) {
+      broadcast("pi:event", {
+        type: "status",
+        payload: { type: "status", text: result.message }
+      });
+    }
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -437,7 +456,8 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
             toolUsed = true;
           }
           broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "echo", turnId });
-        }
+        },
+        onModelStats: broadcastModelStats
       })
     );
     if (turnId !== activeTurnId) {
@@ -620,7 +640,8 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
         localToolServices,
         mcp,
         onToolEvent: (phase, result) =>
-          broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "typed", turnId })
+          broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "typed", turnId }),
+        onModelStats: broadcastModelStats
       })
     );
     if (turnId !== activeTurnId) {
@@ -681,7 +702,8 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
-        onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" })
+        onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" }),
+        onModelStats: broadcastModelStats
       })
     );
     debug(`gemma response complete chars=${text.length}`);

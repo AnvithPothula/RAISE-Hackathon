@@ -59,6 +59,8 @@ notice; only spoken voice is unavailable.
   PYTHOS_OLLAMA_MODEL    -> override the Gemma model (default gemma4:12b)
   PYTHOS_OLLAMA_URL      -> override the Ollama endpoint (default
                             http://127.0.0.1:11434)
+  PYTHOS_CURSOR_WORKSPACE -> project directory for Cursor agent CLI tasks
+  PYTHOS_MCP_SANDBOX     -> root directory MCP file tools may read/write
   PYTHOS_WEB_SEARCH_KEY  -> web search tool
   SPOTIFY_CLIENT_ID      -> Spotify control
 

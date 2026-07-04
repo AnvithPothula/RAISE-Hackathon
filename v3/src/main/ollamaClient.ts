@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import type { AppConfig } from "../shared/types.js";
+import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
 import {
+  buildFunctionDeclarations,
   executeToolCall,
-  FUNCTION_DECLARATIONS,
   type ToolContext,
   type ToolFunctionCall,
   readSystemPrompt
@@ -56,8 +56,82 @@ type OllamaChatResponse = {
   message?: { role?: string; content?: string; thinking?: string; tool_calls?: OllamaToolCall[] };
   eval_count?: number;
   eval_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  load_duration?: number;
+  total_duration?: number;
   error?: string;
 };
+
+type ThinkDecision = { think: boolean; reason: string };
+
+/**
+ * Adaptive thinking: Gemma decides per request whether to spend tokens on an
+ * internal reasoning pass. Simple operational asks (weather, alarms, playback)
+ * stay on the fast path for voice latency; analytical or multi-step requests
+ * turn thinking on. Users can pin it with ollama.think = "on" | "off" in config.
+ */
+export function decideThinking(prompt: string, mode: ThinkMode = "auto"): ThinkDecision {
+  if (mode === "on") {
+    return { think: true, reason: "pinned on in settings" };
+  }
+  if (mode === "off") {
+    return { think: false, reason: "pinned off in settings" };
+  }
+
+  const text = ` ${prompt.toLowerCase()} `;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const reasoningSignals = [
+    "why ",
+    "how do",
+    "how would",
+    "how should",
+    "how can",
+    "explain",
+    "plan ",
+    "analyze",
+    "analyse",
+    "compare",
+    " versus ",
+    " vs ",
+    "difference between",
+    "pros and cons",
+    "trade-off",
+    "tradeoff",
+    "research",
+    "investigate",
+    "strategy",
+    "design ",
+    "debug",
+    "prove ",
+    "derive",
+    "optimiz",
+    "algorithm",
+    "step by step",
+    "should i ",
+    "which is better",
+    "evaluate",
+    "estimate",
+    "summarize the",
+    "write code",
+    "write a script",
+    "write a program"
+  ];
+  const matched = reasoningSignals.find((signal) => text.includes(signal));
+  if (matched) {
+    return { think: true, reason: `detected "${matched.trim()}"` };
+  }
+  if (/\bsolve\b|\bequation\b|\bintegral\b|\bderivative\b|\d+\s*[*/^]\s*\d+/.test(text)) {
+    return { think: true, reason: "math reasoning detected" };
+  }
+  if (words > 45) {
+    return { think: true, reason: "long multi-part request" };
+  }
+  if (/\b(research|investigate|compare|analyze|implement|refactor|architect|debug|optimize)\b/.test(text)) {
+    return { think: true, reason: "agentic task detected" };
+  }
+  return { think: false, reason: "simple request, fast path" };
+}
 
 export async function generateWithOllama(
   prompt: string,
@@ -68,8 +142,13 @@ export async function generateWithOllama(
   const messages = buildMessages(prompt, context);
   const tools = buildTools(context);
 
-  for (let step = 0; step < 3; step += 1) {
-    const message = await chat(messages, tools, config);
+  // Adaptive thinking: complex requests get an internal reasoning pass and a
+  // larger tool-loop budget; simple ones stay on the low-latency voice path.
+  const decision = decideThinking(prompt, config.ollama?.think ?? "auto");
+  const maxSteps = decision.think ? 5 : 3;
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    const message = await chat(messages, tools, config, { think: decision.think, thinkReason: decision.reason, context });
     const toolCalls = message.tool_calls ?? [];
 
     if (!toolCalls.length) {
@@ -98,20 +177,28 @@ export async function generateWithOllama(
     }
   }
 
-  const final = await chat(messages, undefined, config);
+  const final = await chat(messages, undefined, config, { think: false, context });
   return cleanText(final.content) || "I did not get a response from the local model.";
 }
 
-// Dispatch a tool call locally. run_sub_agent is handled by a local Gemma loop so
-// the assistant stays fully on-device; every other tool reuses the shared executor.
+// Dispatch a tool call locally. run_sub_agent and deep_research are handled by
+// local Gemma loops so the assistant stays fully on-device; every other tool
+// reuses the shared executor.
 async function runToolCall(call: ToolFunctionCall, config: AppConfig, context: ToolContext) {
+  const task = String((call.args as { task?: unknown } | undefined)?.task ?? context.prompt ?? "");
   if (call.name === "run_sub_agent") {
     const startedAt = Date.now();
-    const task = String((call.args as { task?: unknown } | undefined)?.task ?? context.prompt ?? "");
     context.onToolEvent?.("start", { name: "sub_agent", text: "Running sub agent" });
     const text = await runLocalSubAgent(task, config, context);
     context.onToolEvent?.("end", { name: "sub_agent", text, durationMs: Date.now() - startedAt });
     return { call, result: { name: "sub_agent", text } };
+  }
+  if (call.name === "deep_research") {
+    const startedAt = Date.now();
+    context.onToolEvent?.("start", { name: "deep_research", text: `Researching: ${task.slice(0, 120)}` });
+    const text = await runDeepResearch(task, config, context);
+    context.onToolEvent?.("end", { name: "deep_research", text, durationMs: Date.now() - startedAt });
+    return { call, result: { name: "deep_research", text } };
   }
   return executeToolCall(call, context);
 }
@@ -123,14 +210,12 @@ async function runLocalSubAgent(task: string, config: AppConfig, context: ToolCo
     { role: "system", content: readSystemPrompt(context.mcp) },
     { role: "user", content: `Task: ${task}` }
   ];
-  const tools = buildTools(context).filter(
-    (tool) => (tool.function as { name?: string }).name !== "run_sub_agent"
-  );
+  const tools = buildTools(context).filter((tool) => !isLoopToolName((tool.function as { name?: string }).name));
 
   for (let step = 0; step < 4; step += 1) {
-    const message = await chat(messages, tools, config);
+    const message = await chat(messages, tools, config, { context });
     const toolCalls = (message.tool_calls ?? []).filter(
-      (toolCall) => toolCall.function?.name !== "run_sub_agent"
+      (toolCall) => !isLoopToolName(toolCall.function?.name)
     );
     if (!toolCalls.length) {
       return cleanText(message.content) || "Sub-agent completed without details.";
@@ -148,8 +233,70 @@ async function runLocalSubAgent(task: string, config: AppConfig, context: ToolCo
     }
   }
 
-  const final = await chat(messages, undefined, config);
+  const final = await chat(messages, undefined, config, { context });
   return cleanText(final.content) || "Sub-agent finished its tool loop.";
+}
+
+const RESEARCH_MAX_ROUNDS = 4;
+
+/**
+ * Self-looping research agent, fully on the local model. Each round Gemma
+ * searches, reads the results, then explicitly reflects on what is still
+ * missing and decides for itself whether to loop again or synthesize. The
+ * reflection step is what makes it a self-loop rather than a fixed pipeline.
+ */
+async function runDeepResearch(task: string, config: AppConfig, context: ToolContext): Promise<string> {
+  const researchSystem =
+    `${readSystemPrompt(context.mcp)}\n\n` +
+    "You are in deep research mode. Work in rounds: call web_search with focused queries " +
+    "(you may issue several searches in one round), study the results, and after each round " +
+    "decide whether you have enough evidence to answer. If information is missing or " +
+    "conflicting, search again with sharper queries. When you have enough, produce a final " +
+    "answer in plain spoken prose with the key sources named. Never invent sources.";
+  const messages: OllamaMessage[] = [
+    { role: "system", content: researchSystem },
+    { role: "user", content: `Research task: ${task}` }
+  ];
+  const tools = buildTools(context).filter((tool) => !isLoopToolName((tool.function as { name?: string }).name));
+
+  for (let round = 0; round < RESEARCH_MAX_ROUNDS; round += 1) {
+    const message = await chat(messages, tools, config, { think: true, thinkReason: "deep research", context });
+    const toolCalls = message.tool_calls ?? [];
+    if (!toolCalls.length) {
+      const answer = cleanText(message.content);
+      if (answer) {
+        return answer;
+      }
+      messages.push({ role: "user", content: "Give your research conclusion now, with sources." });
+      continue;
+    }
+
+    messages.push({ role: "assistant", content: message.content ?? "", tool_calls: toolCalls });
+    const outcomes = await Promise.all(
+      toolCalls.slice(0, 4).map((toolCall) => executeToolCall(toOutcomeCall(toolCall), context))
+    );
+    for (const outcome of outcomes) {
+      messages.push({
+        role: "tool",
+        tool_name: outcome.call.name ?? "tool",
+        content: JSON.stringify(outcome.result)
+      });
+    }
+    // Explicit reflection: the model itself decides whether to loop again.
+    messages.push({
+      role: "user",
+      content:
+        `Reflection after round ${round + 1} of ${RESEARCH_MAX_ROUNDS}: list what you have learned so far in one sentence, ` +
+        "then either call web_search again to fill a specific gap, or give the final sourced answer."
+    });
+  }
+
+  const final = await chat(messages, undefined, config, { think: true, thinkReason: "research synthesis", context });
+  return cleanText(final.content) || "Research loop ended without a conclusion.";
+}
+
+function isLoopToolName(name: string | undefined): boolean {
+  return name === "run_sub_agent" || name === "deep_research";
 }
 
 /**
@@ -224,18 +371,26 @@ export async function isOllamaReady(config?: AppConfig): Promise<boolean> {
   }
 }
 
+type ChatOptions = {
+  think?: boolean;
+  thinkReason?: string;
+  context?: ToolContext;
+};
+
 async function chat(
   messages: OllamaMessage[],
   tools: OllamaTool[] | undefined,
-  config?: AppConfig
+  config?: AppConfig,
+  opts: ChatOptions = {}
 ): Promise<{ content?: string; tool_calls?: OllamaToolCall[] }> {
   const url = resolveOllamaUrl(config);
   const model = resolveOllamaModel(config);
+  const think = opts.think ?? false;
   const body: Record<string, unknown> = {
     model,
     messages,
     stream: false,
-    think: false,
+    think,
     // Gemma 4 recommended sampling.
     options: { temperature: 1.0, top_p: 0.95, top_k: 64 }
   };
@@ -270,11 +425,39 @@ async function chat(
   if (payload.error) {
     throw new Error(payload.error);
   }
+  reportStats(payload, model, think, opts);
   return payload.message ?? { content: "" };
 }
 
+// Surface Ollama's per-request timings as tok/s and TTFT for the on-screen
+// performance HUD (judges see real numbers, plan task 14).
+function reportStats(payload: OllamaChatResponse, model: string, think: boolean, opts: ChatOptions): void {
+  const onStats = opts.context?.onModelStats;
+  if (!onStats) {
+    return;
+  }
+  const evalCount = payload.eval_count ?? 0;
+  const evalSeconds = (payload.eval_duration ?? 0) / 1e9;
+  const stats: ModelStats = {
+    model,
+    tokensPerSecond: evalSeconds > 0 ? Math.round((evalCount / evalSeconds) * 10) / 10 : 0,
+    ttftSeconds:
+      Math.round((((payload.load_duration ?? 0) + (payload.prompt_eval_duration ?? 0)) / 1e9) * 100) / 100,
+    evalCount,
+    totalSeconds: Math.round(((payload.total_duration ?? 0) / 1e9) * 100) / 100,
+    thinking: think,
+    thinkReason: opts.thinkReason,
+    at: Date.now()
+  };
+  try {
+    onStats(stats);
+  } catch {
+    // Stats reporting must never break inference.
+  }
+}
+
 function buildTools(context: ToolContext): OllamaTool[] {
-  const declarations = [...FUNCTION_DECLARATIONS, ...(context.mcp?.listToolDeclarations() ?? [])];
+  const declarations = [...buildFunctionDeclarations(), ...(context.mcp?.listToolDeclarations() ?? [])];
   return declarations.map((declaration) => ({ type: "function", function: declaration }));
 }
 

@@ -1,4 +1,4 @@
-import type { AppConfig, McpStatus, PiEvent, PiStatus, WorkerEvent } from "../shared/types";
+import type { AppConfig, McpStatus, ModelStats, PiEvent, PiStatus, WorkerEvent } from "../shared/types";
 
 declare global {
   interface Window {
@@ -23,6 +23,7 @@ declare global {
       onPiStatus: (callback: (status: PiStatus) => void) => () => void;
       onMcpStatus: (callback: (status: McpStatus) => void) => () => void;
       onAssistantState: (callback: (state: string) => void) => () => void;
+      onModelStats: (callback: (stats: ModelStats) => void) => () => void;
     };
   }
 }

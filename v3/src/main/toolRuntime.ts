@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig } from "../shared/types.js";
+import type { ModelStats } from "../shared/types.js";
 import { appRoot } from "./config.js";
 import {
   extractLocationFromPrompt,
+  isCursorAgentAvailable,
   type LocalToolArgs,
   runNamedLocalTool,
   type LocalToolName,
@@ -30,6 +31,8 @@ export type ToolContext = {
   localToolServices?: LocalToolServices;
   mcp?: McpManager;
   onToolEvent?: (phase: "start" | "end" | "error", result: ToolEventResult) => void;
+  /** Called after every local model inference with tok/s, TTFT, and thinking info. */
+  onModelStats?: (stats: ModelStats) => void;
 };
 
 /** A tool call requested by the model, normalized across transports. */
@@ -198,6 +201,35 @@ export const FUNCTION_DECLARATIONS = [
     }
   },
   {
+    name: "deep_research",
+    description:
+      "Run an iterative self-looping research agent for open-ended or comparative questions that need several web searches. It plans queries, searches, reads results, reflects on gaps, and searches again until it can answer with sources. Use for requests like 'research X', 'compare A and B', buying decisions, or multi-part factual questions. Do not use for a single quick fact — use web_search for that.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "The research question or task, stated completely." }
+      },
+      required: ["task"]
+    }
+  },
+  {
+    name: "run_code",
+    description:
+      "Write and execute a short Python or JavaScript program on the user's machine to compute something, transform data, test logic, or generate output. Use when a task needs real computation beyond simple arithmetic: loops, dates, string processing, sorting, simulations, or algorithms. The program runs locally with a 20 second timeout and its standard output is returned. Always print the result.",
+    parameters: {
+      type: "object",
+      properties: {
+        language: { type: "string", description: "python or javascript" },
+        code: {
+          type: "string",
+          description: "Complete, self-contained program that prints its result to standard output."
+        },
+        description: { type: "string", description: "One short line describing what the code does." }
+      },
+      required: ["language", "code"]
+    }
+  },
+  {
     name: "get_time",
     description: "Get the current local time and date for a location.",
     parameters: {
@@ -268,11 +300,37 @@ export const FUNCTION_DECLARATIONS = [
   }
 ];
 
+const CURSOR_AGENT_DECLARATION = {
+  name: "delegate_coding_task",
+  description:
+    "Delegate a large multi-file coding task to the user's Cursor agent CLI. Use only for real software engineering work in the user's projects (refactors, new features, debugging a repo). For short calculations or scripts, use run_code instead.",
+  parameters: {
+    type: "object",
+    properties: {
+      task: { type: "string", description: "Complete description of the coding task." }
+    },
+    required: ["task"]
+  }
+};
+
+/**
+ * The tool declarations offered to the model. The Cursor delegation tool is
+ * only included when the `cursor-agent` CLI is actually installed, so the model
+ * is never offered a tool that cannot work.
+ */
+export function buildFunctionDeclarations(): Array<Record<string, unknown>> {
+  const declarations: Array<Record<string, unknown>> = [...FUNCTION_DECLARATIONS];
+  if (isCursorAgentAvailable()) {
+    declarations.push(CURSOR_AGENT_DECLARATION);
+  }
+  return declarations;
+}
+
 /**
  * Execute a single tool call. MCP tools are dispatched to the connected server;
- * everything else maps to a local on-device tool. The `run_sub_agent` tool is
- * handled by the model client (which owns the conversation loop), so it never
- * reaches here.
+ * everything else maps to a local on-device tool. The `run_sub_agent` and
+ * `deep_research` tools are handled by the model client (which owns the
+ * conversation loop), so they never reach here.
  */
 export async function executeToolCall(call: ToolFunctionCall, context: ToolContext): Promise<ToolCallOutcome> {
   if (context.mcp?.isMcpTool(call.name)) {
@@ -371,6 +429,12 @@ function normalizeToolName(name: string | undefined): LocalToolName | null {
   }
   if (name === "control_spotify") {
     return "spotify";
+  }
+  if (name === "run_code") {
+    return "run_code";
+  }
+  if (name === "delegate_coding_task") {
+    return "cursor_agent";
   }
   if (name === "update_user_memory") {
     return "memory";

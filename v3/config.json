@@ -23,7 +23,8 @@
   "ollama": {
     "baseUrl": "http://127.0.0.1:11434",
     "model": "gemma4:12b",
-    "lowResourceModel": "gemma4:e2b"
+    "lowResourceModel": "gemma4:e2b",
+    "think": "auto"
   },
   "gradium": {
     "baseWsUrl": "wss://api.gradium.ai/api",
@@ -53,14 +54,29 @@
     "enabled": false
   },
   "mcp": {
-    "enabled": false,
+    "enabled": true,
     "servers": [
       {
+        "name": "system",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "node",
+        "args": ["scripts/pythos-mcp-server.mjs"]
+      },
+      {
         "name": "filesystem",
-        "enabled": false,
+        "enabled": true,
         "transport": "stdio",
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      },
+      {
+        "name": "memory",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+        "env": { "MEMORY_FILE_PATH": ".mcp-memory.json" }
       }
     ]
   },

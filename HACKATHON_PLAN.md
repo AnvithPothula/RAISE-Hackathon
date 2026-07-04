@@ -81,9 +81,80 @@ Team of 2 (Anvith + Griffin). Times are aggressive but real. **P0 = must ship. P
 19. Landing page (Gemma Vision had one; nice-to-have, not judged directly).
 
 ### Cut list (explicitly do NOT spend time on)
-- New tools/features. Six working tools beat ten flaky ones.
-- UI redesign. The orb UI is already demo-ready.
 - Fine-tuning anything. No time, no need.
+- UI redesign beyond demo badges/HUD. The orb UI is already demo-ready.
+
+---
+
+## Shipped Status (updated July 4, 2026 — event day)
+
+### P0 — Gemma on-device brain ✅
+| # | Task | Status |
+|---|------|--------|
+| 1 | `ollama pull gemma4:12b` (+ e2b for low-resource) | ✅ Scripts: `scripts/install-ollama-models.*` |
+| 2 | Local Ollama client with tools + Gemma 4 sampling | ✅ `src/main/ollamaClient.ts` |
+| 3 | Route all LLM paths to Gemma | ✅ `main.ts` → `generateWithOllama` |
+| 4 | Local screen vision via Ollama `images:` | ✅ `analyzeImageWithOllama` |
+| 5 | Auto-start `ollama serve` from Electron | ✅ `src/main/ollamaRuntime.ts` |
+| 6 | `config.json`: `gemma4:12b`, low-resource → `gemma4:e2b` | ✅ |
+| 7 | Tool verification (weather, alarm, Spotify, etc.) | ✅ 40 TS tests passing |
+
+### P0 — Offline mode + kill switch ⚠️ partial
+| # | Task | Status |
+|---|------|--------|
+| 8 | Vosk STT + Piper TTS offline fallback | ⏳ Not wired — voice still Gradium-only; **typed chat + Gemma brain work offline** |
+| 9 | UI badge "● All inference on-device" + mode indicator | ✅ Demo HUD in `App.tsx` |
+| 10 | Wi-Fi-off rehearsal | 🎬 Ready to demo typed prompts offline |
+
+### P0 — Compliance & repo ✅
+| # | Task | Status |
+|---|------|--------|
+| 11 | "Built during RAISE 2026" README section | ✅ |
+| 12 | README rewrite (architecture, 3-step run, privacy) | ✅ |
+| 13 | No secrets in git | ✅ `.env.example`, `API_KEYS_SETUP.txt` |
+
+### P1 — Demo-strengtheners ✅
+| # | Task | Status |
+|---|------|--------|
+| 14 | Perf HUD (tok/s, TTFT) | ✅ `ModelStats` → demo HUD |
+| 15 | Android/Echo remote demo beat | ✅ Bridge exists, orb nodes in UI |
+| 16 | Persistent local memory beat | ✅ `update_user_memory` tool |
+
+### Agentic enhancements (event-built, beyond original cut list) ✅
+Shipped because they strengthen **Demo (50%)** and **Creativity (15%)** without violating the banned-category check:
+
+| Feature | What it does | Where |
+|---------|--------------|-------|
+| **Adaptive thinking** | Auto-detects task complexity; enables Gemma `think:` for research/code/math, fast path for weather/alarms | `decideThinking()` in `ollamaClient.ts`; setting: `ollama.think` = auto/on/off |
+| **Deep research loop** | Self-looping agent: search → reflect → search again → synthesize with sources | `deep_research` tool + `runDeepResearch()` |
+| **Local code execution** | Runs Python/JS on-device with 20s timeout | `run_code` tool |
+| **Cursor delegation** | Large coding tasks → Cursor agent CLI when installed (`delegate_coding_task`) | `localTools.ts`; env: `PYTHOS_CURSOR_WORKSPACE` |
+| **MCP connectors** | pythos-system (clipboard, stats, files, notes), filesystem, memory | `config.json` mcp.servers; status panel in UI |
+| **Sub-agent** | Bounded multi-tool loop for complex tasks | `run_sub_agent` → `runLocalSubAgent()` |
+
+Brain stays **100% local Gemma**. MCP file tools and web_search are optional online enhancements layered on top — same honest hybrid story as Gemma Vision winners.
+
+### P2 — Still deferred
+| # | Task | Status |
+|---|------|--------|
+| 17 | Native audio-in to Gemma E4B | ⏳ |
+| 18 | MLX variant A/B | ⏳ |
+| 19 | Landing page | ⏳ |
+
+### Bonus track angles
+- **Cursor track synergy:** Cursor agent delegation + local Gemma brain = "private voice assistant that can also ship code via Cursor when online."
+- **Gradium partner:** Studio voice online; brain never leaves machine.
+- **Cloudflare/Netlify:** Not primary — edge story is Ollama on laptop/phone bridge.
+
+---
+
+## Demo script updates (use new features)
+
+| t | Beat |
+|---|---|
+| 18–30 s | **Tool call:** alarm + screen vision + **"research the best…"** → `deep_research` loops locally then answers |
+| 30–42 s | **Kill Wi-Fi.** Typed: "what time is it?" + memory recall. HUD shows **● All inference on-device** + tok/s |
+| 42–52 s | Show **MCP Connectors** panel (system/filesystem/memory connected). Echo/Android node if time |
 
 ---
 

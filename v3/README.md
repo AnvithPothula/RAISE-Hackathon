@@ -7,6 +7,17 @@ internet doesn't, and your prompts and screen never get shipped to a datacenter.
 
 Built for the RAISE Summit Hackathon 2026 (Google DeepMind Remote / on-device Gemma track).
 
+## Built during RAISE 2026 (July 4–5)
+
+Work created at the event (see git history on `main`):
+
+- **Gemma 4 on-device brain** — full migration from cloud Gemini to local Ollama (`gemma4:12b`), including tool calling, vision, and adaptive thinking
+- **Agentic loops** — `deep_research` self-looping research agent, local sub-agents, `run_code` sandbox
+- **Cursor integration** — optional `delegate_coding_task` via Cursor agent CLI when installed
+- **MCP connector layer** — pythos-system, filesystem, and memory servers with live status in the UI
+- **Demo HUD** — on-device badge, offline indicator, tok/s + TTFT performance stats for judges
+- **Gradium streaming voice**, cross-platform/Mac support, Alexa/Android remote bridge, SSL fix
+
 ## Architecture
 
 - **Brain (local):** Gemma 4 served by Ollama at `http://127.0.0.1:11434`. Reasoning,

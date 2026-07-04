@@ -40,6 +40,11 @@ const api = {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on("assistant:state", listener);
     return () => ipcRenderer.off("assistant:state", listener);
+  },
+  onModelStats: (callback) => {
+    const listener = (_event, stats) => callback(stats);
+    ipcRenderer.on("model:stats", listener);
+    return () => ipcRenderer.off("model:stats", listener);
   }
 };
 

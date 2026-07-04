@@ -1,3 +1,4 @@
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,9 @@ export type LocalToolResult = {
     | "web_search"
     | "screen"
     | "sub_agent"
+    | "deep_research"
+    | "run_code"
+    | "cursor_agent"
     | "memory"
     | "spotify";
   text: string;
@@ -77,6 +81,9 @@ export type LocalToolArgs = {
   deviceName?: string | null;
   percent?: number | string | null;
   state?: boolean | string | null;
+  language?: string | null;
+  code?: string | null;
+  description?: string | null;
 } & SkillScriptArgs;
 
 type AlarmItem = {
@@ -347,6 +354,14 @@ export async function runNamedLocalTool(
 
   if (name === "web_search") {
     return webSearch(args.query ?? "", services);
+  }
+
+  if (name === "run_code") {
+    return runCodeTool(args);
+  }
+
+  if (name === "cursor_agent") {
+    return runCursorAgentTool(args);
   }
 
   if (name === "screen") {
@@ -1323,6 +1338,158 @@ function calculate(expression: string): LocalToolResult {
     name: "calculator",
     text: `${expression} = ${formatted}`
   };
+}
+
+const CODE_TIMEOUT_MS = 20000;
+const CODE_OUTPUT_LIMIT = 4000;
+
+/**
+ * Execute a short model-written program locally. Python runs via the system
+ * python3; JavaScript runs via Electron's own binary in Node mode
+ * (ELECTRON_RUN_AS_NODE), so no separate Node install is needed. Everything
+ * stays on-device: temp file in, stdout/stderr out, hard 20 s timeout.
+ */
+async function runCodeTool(args: LocalToolArgs): Promise<LocalToolResult> {
+  const code = String(args.code ?? "").trim();
+  if (!code) {
+    throw new Error("Missing code to run.");
+  }
+  const language = normalizeCodeLanguage(String(args.language ?? "python"));
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "pythos-code-"));
+  const file = path.join(scratchDir, language === "python" ? "main.py" : "main.mjs");
+  fs.writeFileSync(file, code, "utf-8");
+
+  const command = language === "python" ? resolvePythonBinary() : process.execPath;
+  const commandArgs = language === "python" ? [file] : [file];
+  const env =
+    language === "python"
+      ? process.env
+      : { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+
+  const output = await new Promise<{ stdout: string; stderr: string; failed: string | null }>((resolve) => {
+    execFile(
+      command,
+      commandArgs,
+      { timeout: CODE_TIMEOUT_MS, maxBuffer: 1024 * 1024, cwd: scratchDir, env },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
+          failed: error ? (error.killed ? "Timed out after 20 seconds." : error.message) : null
+        });
+      }
+    );
+  });
+
+  try {
+    fs.rmSync(scratchDir, { recursive: true, force: true });
+  } catch {
+    // Scratch cleanup is best-effort.
+  }
+
+  const stdout = truncateOutput(output.stdout);
+  const stderr = truncateOutput(output.stderr);
+  const label = args.description ? `${args.description}. ` : "";
+  if (output.failed && !stdout) {
+    return {
+      name: "run_code",
+      text: `${label}The ${language} program failed: ${truncateOutput(output.failed)}${stderr ? ` Stderr: ${stderr}` : ""}`
+    };
+  }
+  return {
+    name: "run_code",
+    text:
+      `${label}Ran ${language} locally. Output:\n${stdout || "(no output printed)"}` +
+      (stderr ? `\nStderr: ${stderr}` : "")
+  };
+}
+
+function normalizeCodeLanguage(value: string): "python" | "javascript" {
+  const lower = value.toLowerCase().trim();
+  if (["js", "javascript", "node", "nodejs", "typescript", "ts"].includes(lower)) {
+    return "javascript";
+  }
+  return "python";
+}
+
+let cachedPythonBinary: string | null = null;
+
+function resolvePythonBinary(): string {
+  if (cachedPythonBinary) {
+    return cachedPythonBinary;
+  }
+  for (const candidate of ["python3", "python"]) {
+    try {
+      execFileSync(candidate, ["--version"], { timeout: 5000, stdio: "ignore" });
+      cachedPythonBinary = candidate;
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  cachedPythonBinary = "python3";
+  return cachedPythonBinary;
+}
+
+function truncateOutput(value: string): string {
+  const clean = value.trim();
+  return clean.length > CODE_OUTPUT_LIMIT ? `${clean.slice(0, CODE_OUTPUT_LIMIT)}… (truncated)` : clean;
+}
+
+let cachedCursorAgentAvailable: boolean | null = null;
+
+/** True when the Cursor agent CLI is installed, so the delegation tool can be offered. */
+export function isCursorAgentAvailable(): boolean {
+  if (cachedCursorAgentAvailable !== null) {
+    return cachedCursorAgentAvailable;
+  }
+  try {
+    execFileSync("cursor-agent", ["--version"], { timeout: 5000, stdio: "ignore" });
+    cachedCursorAgentAvailable = true;
+  } catch {
+    cachedCursorAgentAvailable = false;
+  }
+  return cachedCursorAgentAvailable;
+}
+
+/**
+ * Delegate a larger coding task to the user's Cursor agent CLI when installed.
+ * This is an online enhancement on top of the local Gemma brain; the tool is
+ * only declared to the model when `cursor-agent` is actually present.
+ */
+async function runCursorAgentTool(args: LocalToolArgs): Promise<LocalToolResult> {
+  const task = String(args.task ?? args.query ?? "").trim();
+  if (!task) {
+    throw new Error("Missing task for the Cursor agent.");
+  }
+  if (!isCursorAgentAvailable()) {
+    return {
+      name: "cursor_agent",
+      text: "The Cursor agent CLI is not installed, so I could not delegate the coding task. I can still write and run short programs locally with run_code."
+    };
+  }
+  const workspace =
+    process.env.PYTHOS_CURSOR_WORKSPACE?.trim() ||
+    process.env.CURSOR_WORKSPACE?.trim() ||
+    process.cwd();
+  const output = await new Promise<{ stdout: string; stderr: string; failed: string | null }>((resolve) => {
+    execFile(
+      "cursor-agent",
+      ["-p", task, "--output-format", "text"],
+      { timeout: 180000, maxBuffer: 4 * 1024 * 1024, cwd: workspace },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
+          failed: error ? error.message : null
+        });
+      }
+    );
+  });
+  if (output.failed && !output.stdout.trim()) {
+    return { name: "cursor_agent", text: `Cursor agent failed: ${truncateOutput(output.failed)}` };
+  }
+  return { name: "cursor_agent", text: `Cursor agent result: ${truncateOutput(output.stdout)}` };
 }
 
 async function withLocationFallback(

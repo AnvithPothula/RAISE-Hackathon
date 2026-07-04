@@ -121,6 +121,73 @@ h2 {
   text-overflow: ellipsis;
 }
 
+.demo-hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.demo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.demo-badge.on-device {
+  color: #68e4bf;
+  background: rgba(104, 228, 191, 0.12);
+  border: 1px solid rgba(104, 228, 191, 0.35);
+}
+
+.demo-badge.offline {
+  color: #ffb86b;
+  background: rgba(255, 184, 107, 0.12);
+  border: 1px solid rgba(255, 184, 107, 0.35);
+}
+
+.demo-badge.thinking {
+  color: #78a8ff;
+  background: rgba(120, 168, 255, 0.12);
+  border: 1px solid rgba(120, 168, 255, 0.35);
+}
+
+.demo-badge.perf {
+  color: #d9e6f8;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mcp-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+
+.mcp-row.connected {
+  border-left: 3px solid #68e4bf;
+}
+
+.mcp-row.disconnected {
+  border-left: 3px solid #ff6b6b;
+  opacity: 0.85;
+}
+
 .orb-wrap {
   --level: 0;
   position: relative;

@@ -1,6 +1,16 @@
-import { Activity, Mic, MicOff, Radio, Save, Send, Settings, Square, Trash2, Wrench } from "lucide-react";
+import { Activity, Cpu, Mic, MicOff, Radio, Save, Send, Settings, Square, Trash2, WifiOff, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AppConfig, AssistantState, ConversationItem, PiEvent, PiStatus, WorkerEvent } from "../shared/types";
+import type {
+  AppConfig,
+  AssistantState,
+  ConversationItem,
+  McpStatus,
+  ModelStats,
+  PiEvent,
+  PiStatus,
+  ThinkMode,
+  WorkerEvent
+} from "../shared/types";
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 type VoiceAction = "wakeword" | "mic";
@@ -19,16 +29,19 @@ export function App() {
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [toolEvents, setToolEvents] = useState<PiEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [configSummary, setConfigSummary] = useState("llama3:8b");
+  const [configSummary, setConfigSummary] = useState("Gemma (local, on-device)");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingVoiceAction, setPendingVoiceAction] = useState<VoiceAction | null>(null);
   const [wakeSessionArmed, setWakeSessionArmed] = useState(false);
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
   const [typedPrompt, setTypedPrompt] = useState("");
   const [connectedNodes, setConnectedNodes] = useState<ConnectedNode[]>([]);
   const [toolFlashActive, setToolFlashActive] = useState(false);
+  const [modelStats, setModelStats] = useState<ModelStats | null>(null);
+  const [online, setOnline] = useState(navigator.onLine);
   const toolFlashTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -60,16 +73,32 @@ export function App() {
       });
     });
 
+    window.pythos.getMcpStatus().then((status) => {
+      setMcpStatus(status);
+    }).catch(() => {
+      setMcpStatus({ enabled: false, servers: [] });
+    });
+
     const offWorker = window.pythos.onWorkerEvent(handleWorkerEvent);
     const offPi = window.pythos.onPiEvent(handlePiEvent);
     const offPiStatus = window.pythos.onPiStatus((status) => setPiStatus(status));
+    const offMcpStatus = window.pythos.onMcpStatus((status) => setMcpStatus(status));
     const offState = window.pythos.onAssistantState((next) => setState(next as AssistantState));
+    const offStats = window.pythos.onModelStats((stats) => setModelStats(stats));
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
 
     return () => {
       offWorker();
       offPi();
       offPiStatus();
+      offMcpStatus();
       offState();
+      offStats();
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
       if (toolFlashTimer.current !== null) {
         window.clearTimeout(toolFlashTimer.current);
       }
@@ -300,6 +329,28 @@ export function App() {
           </div>
         </header>
 
+        <div className="demo-hud" aria-label="Runtime status">
+          <span className="demo-badge on-device">● All inference on-device</span>
+          {!online && (
+            <span className="demo-badge offline">
+              <WifiOff size={14} />
+              Network offline — Gemma brain still local
+            </span>
+          )}
+          {modelStats?.thinking && (
+            <span className="demo-badge thinking">
+              <Cpu size={14} />
+              Adaptive thinking{modelStats.thinkReason ? `: ${modelStats.thinkReason}` : ""}
+            </span>
+          )}
+          {config?.gui.showPerformanceStats && modelStats && modelStats.tokensPerSecond > 0 && (
+            <span className="demo-badge perf">
+              <Cpu size={14} />
+              {modelStats.tokensPerSecond} tok/s · TTFT {modelStats.ttftSeconds}s
+            </span>
+          )}
+        </div>
+
         <div
           className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
           style={{ "--level": audioLevel } as React.CSSProperties}
@@ -390,6 +441,27 @@ export function App() {
         </section>
 
         <section className="panel-section">
+          <h2>MCP Connectors</h2>
+          <div className="mcp-list">
+            {!mcpStatus?.enabled || !mcpStatus.servers.length ? (
+              <p className="muted">MCP disabled or no servers configured.</p>
+            ) : (
+              mcpStatus.servers.map((server) => (
+                <div
+                  className={`mcp-row ${server.connected ? "connected" : "disconnected"}`}
+                  key={server.name}
+                >
+                  <span>
+                    {server.name} ({server.toolCount} tools)
+                  </span>
+                  <span>{server.connected ? "connected" : server.error ?? "offline"}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="panel-section">
           <h2>Tool Timeline</h2>
           <div className="tool-list">
             {toolEvents.length === 0 ? (
@@ -429,6 +501,18 @@ export function App() {
               <Setting label="Assistant state" value={state} />
               <Setting label="Pi status" value={formatPiStatus(piStatus)} />
               <Setting label="Brain (local, on-device)" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
+              <SettingSelect
+                label="Adaptive thinking"
+                value={settingsDraft?.ollama?.think ?? "auto"}
+                options={[
+                  { label: "Auto (task-based)", value: "auto" },
+                  { label: "Always on", value: "on" },
+                  { label: "Always off (fastest)", value: "off" }
+                ]}
+                onChange={(value) =>
+                  updateDraft(setSettingsDraft, ["ollama", "think"], value as ThinkMode)
+                }
+              />
               <SettingInput
                 label="Ollama endpoint (local)"
                 value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
