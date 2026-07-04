@@ -17,7 +17,7 @@ import numpy as np
 from .config import WorkerConfig, load_config, validate_model_paths
 from .debug_log import debug
 from .protocol import JsonlWriter, parse_command
-from .speech_to_text import _validate_openwakeword_resources
+from .speech_to_text import _contains_wake_word
 
 
 class GradiumPushTranscriber:
@@ -199,7 +199,12 @@ class EchoRealtimeListener:
         self.last_partial = ""
         self.last_speech = time.time()
         self.listen_started = time.time()
-        self._load_models()
+        missing = validate_model_paths(self.config)
+        if missing:
+            self.events.emit("error", source="config", message="Missing model paths", missing=missing)
+        # A single push transcriber drives both phases: it streams device audio to
+        # Gradium STT to spot the wake word, then a fresh session captures the
+        # command that follows.
         self.transcriber = GradiumPushTranscriber(self.config)
         if not self.config.gradium.is_configured:
             self.events.emit(
@@ -207,29 +212,27 @@ class EchoRealtimeListener:
                 source="config",
                 message="GRADIUM_API_KEY is not set. Export it before launching (see API_KEYS_SETUP.txt).",
             )
+        else:
+            self._open_wake_session()
         self.state = "wakeword"
         self.events.emit("state", value=self.state)
 
-    def _load_models(self) -> None:
-        missing = validate_model_paths(self.config)
-        if missing:
-            self.events.emit("error", source="config", message="Missing model paths", missing=missing)
-        from openwakeword.model import Model
-
-        debug("echo realtime validating openwakeword resources")
-        _validate_openwakeword_resources()
-        debug(f"echo realtime loading wake model path={self.config.models.wake_word}")
-        self.wake_model = Model(
-            wakeword_models=[str(self.config.models.wake_word)],
-            inference_framework="onnx",
-        )
+    def _open_wake_session(self) -> None:
+        """Open a fresh Gradium STT session for wake word detection."""
+        if not self.config.gradium.is_configured:
+            return
+        try:
+            self.transcriber.open()
+        except Exception as exc:
+            debug(f"echo realtime failed to open wake session: {exc}")
+            self.events.emit("error", source="wakeword", message=str(exc))
 
     def reset_to_wakeword(self) -> None:
-        self.transcriber.close()
-        if hasattr(self.wake_model, "reset"):
-            self.wake_model.reset()
         self.last_partial = ""
         self.state = "wakeword"
+        # Re-open the STT session so stale command audio never leaks into wake
+        # detection (open() closes the previous session first).
+        self._open_wake_session()
         self.events.emit("state", value=self.state)
 
     def manual_wake(self) -> None:
@@ -250,11 +253,24 @@ class EchoRealtimeListener:
         samples = np.frombuffer(audio, dtype=np.int16)
         if samples.size == 0:
             return
-        prediction = self.wake_model.predict(samples)
-        score = float(prediction.get(self.config.audio.wake_word, 0.0))
-        if score >= self.config.audio.wake_threshold:
-            self.events.emit("wake", word=self.config.audio.wake_word, score=score)
+        self.transcriber.send(audio)
+        status = self.transcriber.poll()
+
+        if status["error"]:
+            debug(f"echo realtime wake session error: {status['error']}")
+            self._open_wake_session()
+            return
+
+        partial = str(status["partial"]).strip()
+        if partial and _contains_wake_word(partial, self.config.audio.wake_word):
+            self.events.emit("wake", word=self.config.audio.wake_word, score=1.0)
             self._start_listening("wakeword")
+            return
+
+        # A phrase completed without the wake word: refresh the session so the
+        # transcript context stays bounded and matching tracks live speech.
+        if status["turn_ended"]:
+            self._open_wake_session()
 
     def _start_listening(self, source: str) -> None:
         if not self.config.gradium.is_configured:

@@ -5,10 +5,10 @@ import base64
 import contextlib
 import json
 import math
-from pathlib import Path
+import re
 import threading
 import time
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
@@ -28,8 +28,6 @@ class SpeechListener:
         self._state = "idle"
         self._request_id = 0
         self._preload_thread: threading.Thread | None = None
-        self._wake_model_lock = threading.Lock()
-        self._wake_model: Any | None = None
 
     def preload(self) -> None:
         if self._preload_thread and self._preload_thread.is_alive():
@@ -161,14 +159,10 @@ class SpeechListener:
             self._active_mode = value
 
     def _preload_models(self) -> None:
-        try:
-            started = time.perf_counter()
-            debug("preload loading wake model")
-            self._get_wake_model()
-            debug(f"preload complete elapsed={time.perf_counter() - started:.2f}s")
-        except Exception as exc:
-            debug(f"preload error: {exc}")
-            self._events.emit("error", source="model-preload", message=str(exc))
+        # Wake word detection now runs through the Gradium STT cloud API, so there
+        # is no local model to warm up. The Gradium session opens on demand when
+        # listening starts. Kept for API compatibility with the worker startup.
+        debug("preload no-op (wake word detection uses Gradium STT)")
 
     def _listen_once(self, stop_event: threading.Event) -> None:
         try:
@@ -209,12 +203,7 @@ class SpeechListener:
             import pyaudio
 
             if not self._config.gradium.is_configured:
-                raise RuntimeError("GRADIUM_API_KEY is not set; cannot transcribe speech.")
-            debug("wakeword getting wake model")
-            wake_model = self._get_wake_model()
-            if hasattr(wake_model, "reset"):
-                wake_model.reset()
-                debug("wakeword model reset")
+                raise RuntimeError("GRADIUM_API_KEY is not set; cannot detect wake word.")
             if stop_event.is_set():
                 debug("wakeword cancelled before microphone open")
                 self._emit_state("idle", stop_event)
@@ -231,21 +220,13 @@ class SpeechListener:
             try:
                 debug("wakeword state=wakeword")
                 self._emit_state("wakeword", stop_event)
-                while not stop_event.is_set():
-                    data = stream.read(self._config.audio.chunk, exception_on_overflow=False)
-                    self._events.emit("audio_level", value=_rms_level(data))
-                    samples = np.frombuffer(data, dtype=np.int16)
-                    prediction = wake_model.predict(samples)
-                    score = float(prediction.get(self._config.audio.wake_word, 0.0))
-                    if score >= self._config.audio.wake_threshold:
-                        debug(
-                            f"wakeword detected word={self._config.audio.wake_word} "
-                            f"score={score:.3f} threshold={self._config.audio.wake_threshold}"
-                        )
-                        self._set_active_mode("listening", stop_event)
-                        self._emit_state("listening", stop_event)
-                        self._transcribe(stream.read, stop_event)
-                        return
+                detected = self._detect_wake_word(stream.read, stop_event)
+                if detected and not stop_event.is_set():
+                    debug(f"wakeword detected word={self._config.audio.wake_word}; listening")
+                    self._set_active_mode("listening", stop_event)
+                    self._emit_state("listening", stop_event)
+                    self._transcribe(stream.read, stop_event)
+                    return
                 debug("wakeword stop_event set; returning idle")
                 self._emit_state("idle", stop_event)
             finally:
@@ -259,24 +240,94 @@ class SpeechListener:
                 self._events.emit("state", value="error")
                 self._events.emit("error", source="wakeword", message=str(exc))
 
-    def _get_wake_model(self) -> Any:
-        if self._wake_model is not None:
-            return self._wake_model
-        with self._wake_model_lock:
-            if self._wake_model is None:
-                debug("importing openwakeword Model")
-                from openwakeword.model import Model
+    def _detect_wake_word(self, read: Callable[..., bytes], stop_event: threading.Event) -> bool:
+        """Stream mic audio to Gradium STT until the wake word is transcribed.
 
-                debug("validating openwakeword resources")
-                _validate_openwakeword_resources()
-                started = time.perf_counter()
-                debug(f"loading wake model path={self._config.models.wake_word}")
-                self._wake_model = Model(
-                    wakeword_models=[str(self._config.models.wake_word)],
-                    inference_framework="onnx",
-                )
-                debug(f"loaded wake model elapsed={time.perf_counter() - started:.2f}s")
-            return self._wake_model
+        Returns True when the configured wake word is heard, or False if the
+        listener was stopped first. Runs the async streaming session on a private
+        event loop, mirroring how ``_transcribe`` drives a listening turn.
+        """
+        try:
+            return asyncio.run(self._detect_wake_word_async(read, stop_event))
+        except Exception as exc:
+            debug(f"gradium wakeword error: {exc}")
+            if self._is_current_stop_event(stop_event):
+                self._events.emit("state", value="error")
+                self._events.emit("error", source="wakeword", message=str(exc))
+            return False
+
+    async def _detect_wake_word_async(
+        self, read: Callable[..., bytes], stop_event: threading.Event
+    ) -> bool:
+        import websockets
+
+        cfg = self._config.gradium
+        url = f"{cfg.base_ws_url}/speech/asr"
+        setup = {
+            "type": "setup",
+            "model_name": cfg.stt_model,
+            "input_format": cfg.stt_input_format,
+        }
+        loop = asyncio.get_event_loop()
+        chunk = self._config.audio.chunk
+        wake_word = self._config.audio.wake_word
+        detected = asyncio.Event()
+        segments: list[str] = []
+
+        debug(f"gradium wakeword connecting url={url} word={wake_word!r}")
+        async with websockets.connect(url, additional_headers={"x-api-key": cfg.api_key}) as ws:
+            await ws.send(json.dumps(setup))
+            ready = json.loads(await ws.recv())
+            if ready.get("type") != "ready":
+                raise RuntimeError(f"Unexpected STT handshake response: {ready}")
+
+            async def producer() -> None:
+                while not stop_event.is_set() and not detected.is_set():
+                    data = await loop.run_in_executor(
+                        None, lambda: read(chunk, exception_on_overflow=False)
+                    )
+                    self._events.emit("audio_level", value=_rms_level(data))
+                    await ws.send(
+                        json.dumps({"type": "audio", "audio": base64.b64encode(data).decode()})
+                    )
+                with contextlib.suppress(Exception):
+                    await ws.send(json.dumps({"type": "end_of_stream"}))
+
+            async def consumer() -> None:
+                async for raw in ws:
+                    if stop_event.is_set():
+                        return
+                    msg = json.loads(raw)
+                    kind = msg.get("type")
+                    if kind == "text":
+                        text = str(msg.get("text", "")).strip()
+                        if text:
+                            segments.append(text)
+                            heard = " ".join(segments)
+                            if _contains_wake_word(heard, wake_word):
+                                debug(f"gradium wakeword matched in transcript={heard!r}")
+                                detected.set()
+                                return
+                    elif kind == "step":
+                        # A completed phrase without the wake word: drop stale text so
+                        # matching stays anchored to what is currently being said.
+                        vad = msg.get("vad") or []
+                        idx = cfg.vad_horizon_index
+                        if (
+                            segments
+                            and len(vad) > idx
+                            and float(vad[idx].get("inactivity_prob", 0.0))
+                            > cfg.vad_inactivity_threshold
+                        ):
+                            segments.clear()
+                    elif kind == "end_of_stream":
+                        return
+                    elif kind == "error":
+                        raise RuntimeError(msg.get("message", "Gradium STT error"))
+
+            await asyncio.gather(producer(), consumer())
+
+        return detected.is_set()
 
     def _transcribe(self, read: Callable[..., bytes], stop_event: threading.Event) -> None:
         """Stream microphone audio to Gradium STT and emit transcripts.
@@ -400,16 +451,19 @@ def _rms_level(audio_bytes: bytes) -> float:
     return min(1.0, rms / 32768.0)
 
 
-def _validate_openwakeword_resources() -> None:
-    import openwakeword
+def _contains_wake_word(text: str, wake_word: str) -> bool:
+    """Return True if the wake word appears in a Gradium STT transcript.
 
-    model_dir = openwakeword.FEATURE_MODELS["melspectrogram"]["model_path"]
-    resource_dir = Path(model_dir).parent
-    required = ["melspectrogram.onnx", "embedding_model.onnx"]
-    missing = [name for name in required if not (resource_dir / name).exists()]
-    if missing:
-        raise FileNotFoundError(
-            "OpenWakeWord runtime resources are missing from the venv: "
-            + ", ".join(missing)
-            + f". Expected them in {resource_dir}."
-        )
+    Matching is punctuation- and case-insensitive. A single-word wake word is
+    matched against whole transcribed words (so "pythos" won't fire on an
+    unrelated substring), while a multi-word wake phrase is matched as a
+    contiguous substring of the normalized text.
+    """
+    target = re.sub(r"[^a-z0-9 ]", " ", wake_word.lower()).strip()
+    if not target:
+        return False
+    normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+    words = normalized.split()
+    if " " in target:
+        return target in " ".join(words)
+    return target in words

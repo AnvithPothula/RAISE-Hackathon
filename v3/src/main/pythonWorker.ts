@@ -1,7 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { appRoot, resolveWorkerPython } from "./config.js";
+import { appRoot, caBundleEnv, resolveWorkerPython } from "./config.js";
 import { JsonlBuffer } from "./jsonl.js";
 import type { WorkerEvent } from "../shared/types.js";
 
@@ -28,6 +28,7 @@ export class PythonWorkerBridge extends EventEmitter {
     debug(`starting python worker executable=${python}`);
     const env = {
       ...process.env,
+      ...caBundleEnv(),
       PYTHOS_DEBUG: process.env.PYTHOS_DEBUG ?? "1",
       PYTHONPATH: path.join(appRoot, "src"),
       PYTHOS_CONFIG: path.join(appRoot, "config.json")

@@ -8,7 +8,7 @@ Pythos v3 is a dev-first rebuild of v2 with a Python audio worker, Electron/Reac
 - Electron main: process supervision, typed IPC, Pi RPC bridge.
 - React renderer: modern voice orb visualizer, transcript, controls, and tool timeline.
 - Pi project hooks: safe local tools in `.pi/extensions` and skills in `.pi/skills`.
-- Models: local wake-word, Vosk, and Piper assets live in `v3/Models`; the LLM runs on the Google AI Studio (Gemini) API.
+- Speech: wake-word detection, STT, and TTS all run through the Gradium cloud API; legacy Vosk/Piper assets in `v3/Models` are kept only for backward compatibility. The LLM runs on the Google AI Studio (Gemini) API.
 
 ## Setup
 

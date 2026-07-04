@@ -142,11 +142,8 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
 def validate_model_paths(config: WorkerConfig) -> list[str]:
     """Validate on-device model assets that are still required.
 
-    STT (Vosk) and TTS (Piper) now run through the Gradium cloud API, so only the
-    local wake-word model is required. Piper/Vosk paths remain in the config for
-    backward compatibility but are no longer validated here.
+    Wake word detection, STT (Vosk) and TTS (Piper) now all run through the
+    Gradium cloud API, so no local model assets are required. The model paths
+    remain in the config for backward compatibility but are no longer validated.
     """
-    missing: list[str] = []
-    if not config.models.wake_word.exists():
-        missing.append(f"wake word model: {config.models.wake_word}")
-    return missing
+    return []
