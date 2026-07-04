@@ -1,10 +1,17 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, Notification, shell } from "electron";
-import { spawn } from "node:child_process";
+import { app, BrowserWindow, desktopCapturer, ipcMain, Notification, screen, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openLocalApp } from "./appLauncher.js";
+import {
+  extractAssistantText,
+  extractLastAssistantText,
+  extractPiError,
+  isUnsupportedToolModelError,
+  sanitizeAssistantText
+} from "./assistantText.js";
 import { readConfig, writeConfig } from "./config.js";
-import { analyzeImageWithOllama, generateWithOllama, resolveActiveModel } from "./ollamaClient.js";
+import { generateWithOllama, analyzeImageWithOllama, resolveActiveModel } from "./ollamaClient.js";
 import { ensureOllamaReady } from "./ollamaRuntime.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
@@ -12,18 +19,17 @@ import { McpManager } from "./mcpManager.js";
 import {
   extractUserLocation,
   runNamedLocalTool,
-  type AppOpenOutcome,
   type LocalToolArgs,
   type LocalToolName,
   type LocalToolServices
 } from "./localTools.js";
 import { EchoBridge, type EchoBridgeEvent, type EchoPromptReply } from "./echoBridge.js";
-import { createExternalLocalToolServices } from "./externalServices.js";
 import { UserMemoryStore } from "./userMemory.js";
 import { isRetryPrompt } from "./toolRetry.js";
+import { compactDebugDetails, createLogger, formatDebugFields, truncateDebugValue } from "./logger.js";
 import type { McpStatus, ModelStats, WorkerEvent } from "../shared/types.js";
-
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+const debug = createLogger("main");
 let config = readConfig();
 const pythonWorker = new PythonWorkerBridge();
 const pi = new PiRpcBridge(config.pi);
@@ -45,7 +51,7 @@ let isQuitting = false;
 
 let mainWindow: BrowserWindow | null = null;
 
-type PromptSource = "typed" | "echo" | "retry" | "fallback";
+type PromptSource = "typed" | "echo" | "retry" | "fallback" | "gemma";
 type ToolEventPayload = {
   name: string;
   text?: string;
@@ -61,13 +67,16 @@ type ToolEventPayload = {
 };
 
 const localToolServices: LocalToolServices = {
-  ...createExternalLocalToolServices(),
+  fetch: (url, init) => fetch(url, init),
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (timeout) => clearTimeout(timeout),
   userMemory,
   spotify: config.spotify,
   captureScreen,
   analyzeScreen: (imagePath, prompt) => analyzeImageWithOllama(imagePath, prompt, config),
   openApp: openLocalApp,
-  openWebsite: openExternalWebsite,
+  openWebsite: (url) => shell.openExternal(url),
   onAlarm: (alarm) => {
     const text = `Alarm: ${alarm.label}`;
     debug(`alarm fired id=${alarm.id} label="${alarm.label}"`);
@@ -398,7 +407,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
       tool: lastRetryableTool.name,
       args: lastRetryableTool.args
     });
-    return { text: await retryLastToolForEcho(turnId), toolUsed: true };
+    return { text: await retryLastTool(turnId, "echo"), toolUsed: true };
   }
 
   try {
@@ -427,7 +436,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     );
     if (turnId !== activeTurnId) {
       debug(`echo response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      return "I already moved on to another request.";
+      return { text: "I already moved on to another request.", toolUsed };
     }
     activePrompt = null;
     emitDebugEvent("gemma response", { turnId, source: "echo", chars: text.length, toolUsed });
@@ -444,40 +453,57 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
     debug(`echo gemma response failed ${String(error)}`);
     emitDebugEvent("gemma failed", { turnId, source: "echo", error: String(error) });
-    broadcastAssistantText(message, "error");
+    activePrompt = null;
     rememberTurn("assistant", message);
+    broadcastAssistantText(message, "error");
     broadcast("assistant:state", "error");
-    return message;
+    return { text: message, toolUsed };
   }
 }
 
-async function retryLastTool(turnId: number, source: string): Promise<void> {
-  const text = await runStoredToolRetry();
-  if (turnId !== activeTurnId) {
-    debug(`retry result ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-    return;
-  }
-  activePrompt = null;
-  rememberTurn("assistant", text);
-  broadcastAssistantText(text, source);
-  pythonWorker.send({ type: "speak", text });
+function isStaleTurn(turnId: number): boolean {
+  return turnId !== activeTurnId;
 }
 
-async function retryLastToolForEcho(turnId: number): Promise<string> {
-  const text = await runStoredToolRetry();
-  if (turnId !== activeTurnId) {
-    debug(`echo retry ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-    return "I already moved on to another request.";
-  }
-  activePrompt = null;
-  rememberTurn("assistant", text);
-  broadcastAssistantText(text, "echo");
+function staleTurnMessage(): string {
+  return "I already moved on to another request.";
+}
+
+function scheduleEchoIdle(turnId: number, delayMs = 5000): void {
   broadcast("assistant:state", "speaking");
   setTimeout(() => {
     if (activeTurnId === turnId) {
       broadcast("assistant:state", "idle");
     }
-  }, 5000);
+  }, delayMs);
+}
+
+function finishAssistantTurn(text: string, source: string, _turnId: number, options: { speak?: boolean } = {}): void {
+  activePrompt = null;
+  rememberTurn("assistant", text);
+  broadcastAssistantText(text, source);
+  if (options.speak !== false && source !== "error") {
+    pythonWorker.send({ type: "speak", text });
+  }
+}
+
+function gemmaUnavailableMessage(error: unknown, includePi = false): string {
+  const prefix = includePi
+    ? "I could not reach Pi or the local Gemma model."
+    : "I could not reach the local Gemma model.";
+  return `${prefix} Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
+}
+
+async function retryLastTool(turnId: number, source: PromptSource): Promise<string> {
+  const text = await runStoredToolRetry();
+  if (isStaleTurn(turnId)) {
+    debug(`retry result ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+    return source === "echo" ? staleTurnMessage() : text;
+  }
+  finishAssistantTurn(text, source === "echo" ? "echo" : "gemma", turnId);
+  if (source === "echo") {
+    scheduleEchoIdle(turnId);
+  }
   return text;
 }
 
@@ -548,28 +574,24 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
         onModelStats: broadcastModelStats
       })
     );
-    if (turnId !== activeTurnId) {
+    if (isStaleTurn(turnId)) {
       debug(`gemma response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
       emitDebugEvent("stale gemma response ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
     debug(`gemma response complete chars=${text.length}`);
     emitDebugEvent("gemma response", { turnId, source: "typed", chars: text.length });
-    activePrompt = null;
-    rememberTurn("assistant", text);
-    broadcastAssistantText(text, "gemma");
-    pythonWorker.send({ type: "speak", text });
+    finishAssistantTurn(text, "gemma", turnId);
   } catch (error) {
-    if (turnId !== activeTurnId) {
+    if (isStaleTurn(turnId)) {
       debug(`gemma error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
       emitDebugEvent("stale gemma error ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
     debug(`gemma response failed ${String(error)}`);
     emitDebugEvent("gemma failed", { turnId, source: "typed", error: String(error) });
-    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
-    broadcastAssistantText(message, "error");
-    rememberTurn("assistant", message);
+    const message = gemmaUnavailableMessage(error);
+    finishAssistantTurn(message, "error", turnId, { speak: false });
     broadcast("assistant:state", "error");
   }
 }
@@ -612,16 +634,11 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
     );
     debug(`gemma response complete chars=${text.length}`);
     emitDebugEvent("gemma fallback response", { source: "fallback", chars: text.length });
-    activePrompt = null;
-    rememberTurn("assistant", text);
-    broadcastAssistantText(text, "gemma-fallback");
-    pythonWorker.send({ type: "speak", text });
+    finishAssistantTurn(text, "gemma-fallback", activeTurnId);
   } catch (error) {
     debug(`gemma response failed ${String(error)}`);
     emitDebugEvent("gemma fallback failed", { source: "fallback", error: String(error) });
-    const message = `I could not reach Pi or the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
-    broadcastAssistantText(message, "error");
-    rememberTurn("assistant", message);
+    finishAssistantTurn(gemmaUnavailableMessage(error, true), "error", activeTurnId, { speak: false });
     broadcast("assistant:state", "error");
   }
 }
@@ -712,13 +729,30 @@ function broadcastAssistantText(text: string, source: string): void {
 }
 
 async function captureScreen(): Promise<{ path: string; width: number; height: number }> {
+  const targetDisplay =
+    mainWindow && !mainWindow.isDestroyed()
+      ? screen.getDisplayMatching(mainWindow.getBounds())
+      : screen.getPrimaryDisplay();
+  const scale = targetDisplay.scaleFactor;
+  const thumbnailSize = {
+    width: Math.min(2560, Math.max(640, Math.round(targetDisplay.size.width * scale))),
+    height: Math.min(1440, Math.max(480, Math.round(targetDisplay.size.height * scale)))
+  };
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
-    thumbnailSize: { width: 1920, height: 1080 }
+    thumbnailSize,
+    fetchWindowIcons: false
   });
-  const source = sources[0];
-  if (!source || source.thumbnail.isEmpty()) {
-    throw new Error("No screen source was available to capture.");
+  const displayId = String(targetDisplay.id);
+  const source =
+    sources.find((entry) => String(entry.display_id) === displayId && !entry.thumbnail.isEmpty()) ??
+    sources.find((entry) => !entry.thumbnail.isEmpty());
+  if (!source) {
+    const permissionHint =
+      process.platform === "darwin"
+        ? " Grant Screen Recording permission in System Settings > Privacy & Security."
+        : "";
+    throw new Error(`No screen source was available to capture.${permissionHint}`);
   }
   const image = source.thumbnail;
   const size = image.getSize();
@@ -727,203 +761,11 @@ async function captureScreen(): Promise<{ path: string; width: number; height: n
   return { path: filePath, width: size.width, height: size.height };
 }
 
-async function openExternalWebsite(url: string): Promise<void> {
-  await shell.openExternal(url);
-}
-
-async function openLocalApp(target: string): Promise<AppOpenOutcome> {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
-    await shell.openExternal(target);
-    return { opened: true, detail: `Opened ${target}.` };
-  }
-  if (process.platform === "darwin") {
-    await openLocalAppOnMac(target);
-    return { opened: true, detail: `Opened ${target}.` };
-  }
-  if (process.platform !== "win32") {
-    await openLocalAppOnLinux(target);
-    return { opened: true, detail: `Opened ${target}.` };
-  }
-  return openLocalAppOnWindows(target);
-}
-
-function openLocalAppOnMac(target: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("open", ["-a", target], { stdio: "pipe" });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      // The app was not found by name; try opening it as a path or bundle.
-      const fallback = spawn("open", [target], { detached: true, stdio: "ignore" });
-      fallback.on("error", () => reject(new Error(stderr.trim() || `Could not open app ${target}.`)));
-      fallback.on("spawn", () => {
-        fallback.unref();
-        resolve();
-      });
-    });
-  });
-}
-
-function openLocalAppOnLinux(target: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(target, { detached: true, stdio: "ignore" });
-    child.on("error", () => {
-      const fallback = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
-      fallback.on("error", () => reject(new Error(`Could not open app ${target}.`)));
-      fallback.on("spawn", () => {
-        fallback.unref();
-        resolve();
-      });
-    });
-    child.on("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
-}
-
-function openLocalAppOnWindows(target: string): Promise<AppOpenOutcome> {
-  return new Promise((resolve, reject) => {
-    const escaped = target.replace(/'/g, "''");
-    // Launch through Start-Process (resolves PATH, App Paths, and app aliases),
-    // then confirm a process actually came up so we never claim success blindly.
-    const script = [
-      "$ErrorActionPreference = 'Stop'",
-      "try {",
-      `  $proc = Start-Process -FilePath '${escaped}' -PassThru`,
-      "} catch {",
-      "  Write-Output ('FAIL:' + $_.Exception.Message)",
-      "  exit 0",
-      "}",
-      "if ($null -eq $proc) { Write-Output 'HANDOFF'; exit 0 }",
-      "Start-Sleep -Milliseconds 400",
-      "$alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue",
-      "if ($alive) { Write-Output ('OK:' + $alive.ProcessName) } else { Write-Output 'HANDOFF' }",
-      "exit 0"
-    ].join("; ");
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { windowsHide: true, stdio: "pipe" }
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", reject);
-    child.on("exit", () => {
-      const output = stdout.trim();
-      if (output.startsWith("OK:")) {
-        const processName = output.slice(3).trim();
-        resolve({ opened: true, detail: `Opened ${processName || target}.` });
-        return;
-      }
-      if (output === "HANDOFF") {
-        // Start-Process succeeded but the launcher handed off to an existing
-        // instance, so there is no fresh process to confirm. Treat as opened.
-        resolve({ opened: true, detail: `Opened ${target}.` });
-        return;
-      }
-      if (output.startsWith("FAIL:")) {
-        const reason = output.slice(5).trim();
-        resolve({ opened: false, detail: `Could not open ${target}: ${reason || "app not found"}.` });
-        return;
-      }
-      resolve({
-        opened: false,
-        detail: `Could not confirm ${target} opened${stderr.trim() ? `: ${stderr.trim()}` : "."}`
-      });
-    });
-  });
-}
-
-function sanitizeAssistantText(text: string): string {
-  return text
-    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/°\s*F/gi, " degrees Fahrenheit")
-    .replace(/°\s*C/gi, " degrees Celsius")
-    .replace(/[\u{1F000}-\u{1FAFF}]/gu, "")
-    .replace(/[\u{2600}-\u{27BF}]/gu, "")
-    .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
-    .replace(/[\u{E0000}-\u{E007F}]/gu, "")
-    .replace(/[\u200D\u20E3]/gu, "")
-    .replace(/[^\u0009\u000A\u000D\u0020-\u007E\u00A0-\u024F]/gu, "")
-    .replace(/\r?\n+/g, " ")
-    .replace(/\*+/g, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\s+([,.!?;:])/g, "$1")
-    .trim();
-}
-
 function clearPendingPiFallbacks(): void {
   for (const timer of pendingPiPrompts.values()) {
     clearTimeout(timer);
   }
   pendingPiPrompts.clear();
-}
-
-function extractAssistantText(payload: Record<string, unknown>): string {
-  const candidates = [payload.text, payload.content, payload.message];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-    if (candidate && typeof candidate === "object") {
-      const nested = candidate as Record<string, unknown>;
-      if (typeof nested.text === "string" && nested.text.trim()) {
-        return nested.text;
-      }
-      if (typeof nested.content === "string" && nested.content.trim()) {
-        return nested.content;
-      }
-    }
-  }
-  return "";
-}
-
-function extractLastAssistantText(payload: Record<string, unknown>): string {
-  const data = payload.data as Record<string, unknown> | undefined;
-  const text = data?.text;
-  return typeof text === "string" ? text.trim() : "";
-}
-
-function extractPiError(payload: Record<string, unknown> | undefined): string {
-  if (!payload) {
-    return "";
-  }
-  const candidates = [payload.error, payload.errorMessage, payload.message];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-    if (candidate && typeof candidate === "object") {
-      const nested = candidate as Record<string, unknown>;
-      if (typeof nested.errorMessage === "string" && nested.errorMessage.trim()) {
-        return nested.errorMessage;
-      }
-      if (typeof nested.error === "string" && nested.error.trim()) {
-        return nested.error;
-      }
-    }
-  }
-  return "";
-}
-
-function isUnsupportedToolModelError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return normalized.includes("does not support tools") || normalized.includes("tools are not supported");
 }
 
 function emitDebugEvent(text: string, details: Record<string, unknown> = {}): void {
@@ -937,42 +779,4 @@ function emitDebugEvent(text: string, details: Record<string, unknown> = {}): vo
       ...compactDebugDetails(details)
     }
   });
-}
-
-function compactDebugDetails(details: Record<string, unknown>): Record<string, unknown> {
-  const compact: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(details)) {
-    if (value === undefined || value === null || value === "") {
-      continue;
-    }
-    compact[key] = typeof value === "string" ? truncateDebugValue(value, 260) : value;
-  }
-  return compact;
-}
-
-function formatDebugFields(fields: Record<string, unknown>): string {
-  return Object.entries(fields)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, value]) => `${key}=${formatDebugValue(value)}`)
-    .join(" ");
-}
-
-function formatDebugValue(value: unknown): string {
-  if (typeof value === "string") {
-    return `"${truncateDebugValue(value)}"`;
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return truncateDebugValue(JSON.stringify(value));
-}
-
-function truncateDebugValue(value: string | undefined, maxLength = 240): string {
-  const text = String(value ?? "");
-  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
-}
-
-function debug(message: string): void {
-  const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false });
-  console.error(`[pythos-main ${timestamp}] ${message}`);
 }

@@ -1,138 +1,251 @@
-# Pythos v3
+# Pythos
 
-Pythos v3 is a dev-first rebuild of v2 with a Python audio worker, Electron/React desktop UI, and Pi RPC tools/skills.
+**A privacy-first voice assistant whose brain never leaves your machine.**
 
-## Architecture
+Pythos runs wake word detection, conversation, tool calling, and screen understanding on-device with **Gemma 4 via [Ollama](https://ollama.com)**. Typed chat works fully offline with no API keys. Optional cloud voice (Gradium) adds studio-quality speech when you want it.
 
-- Python worker: Vosk ASR, Piper TTS, model path validation, JSONL protocol.
-- Electron main: process supervision, typed IPC, Pi RPC bridge.
-- React renderer: modern voice orb visualizer, transcript, controls, and tool timeline.
-- Pi project hooks: safe local tools in `.pi/extensions` and skills in `.pi/skills`.
-- Speech: wake-word detection, STT, and TTS all run through the Gradium cloud API; legacy Vosk/Piper assets in `v3/Models` are kept only for backward compatibility. The LLM runs on the Google AI Studio (Gemini) API.
+Built for the **RAISE Summit Hackathon 2026** — Google DeepMind Remote / on-device Gemma track.
 
-## Setup
+---
 
-### Windows
+## Table of contents
 
-```powershell
-cd C:\Helper-Base\v3
-.\scripts\setup-venv.ps1
-npm install
-.\scripts\install-pi-models.ps1
-```
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Run](#run)
+- [Optional configuration](#optional-configuration)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+- [Remote clients](#remote-clients)
+- [Documentation](#documentation)
 
-Install Pi separately if `pi` is not already on PATH:
+---
 
-```powershell
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
+## Features
 
-### macOS / Linux
+- **On-device LLM** — Gemma 4 through Ollama; no cloud API key required for reasoning or tools
+- **Local screen vision** — “What’s on my screen?” answered without sending screenshots off-device
+- **Voice orb UI** — Electron + React desktop app with transcript, controls, and tool timeline
+- **Agentic tools** — weather, alarms, Spotify, app launcher, web search, memory, MCP connectors, and more
+- **Offline resilience** — keep chatting after Wi‑Fi drops; the model runs locally
+- **Remote nodes** — Android and Alexa/Echo clients over Tailscale (optional)
 
-PyAudio needs the native PortAudio library. Install it first:
+---
+
+## Prerequisites
+
+Install these before setup:
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| [Ollama](https://ollama.com/download) | latest | Serves Gemma 4 locally |
+| Node.js | 20+ | Electron + React app |
+| Python | 3.11+ | Audio worker |
+| PortAudio | — | **macOS/Linux only** — needed for PyAudio |
+
+**PortAudio (macOS / Linux):**
 
 ```bash
 # macOS
 brew install portaudio
+
 # Debian / Ubuntu
 sudo apt-get install -y portaudio19-dev
 ```
 
-Then set up the project:
+---
+
+## Installation
+
+All application code lives in the `v3/` directory.
+
+### 1. Clone the repository
 
 ```bash
-cd v3
-chmod +x scripts/*.sh          # first time only
-./scripts/setup-venv.sh
-npm install
-./scripts/install-pi-models.sh
+git clone https://github.com/AnvithPothula/RAISE-Hackathon.git
+cd RAISE-Hackathon/v3
 ```
 
-Install Pi separately if `pi` is not already on PATH:
+### 2. Pull the local model (required)
+
+Pythos needs Gemma 4 available through Ollama:
+
+```bash
+# macOS / Linux
+./scripts/install-ollama-models.sh
+
+# Windows (PowerShell)
+.\scripts\install-ollama-models.ps1
+```
+
+Or manually:
+
+```bash
+ollama serve          # if not already running
+ollama pull gemma4:12b
+ollama pull gemma4:e2b   # optional — low-resource fallback
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+You should see `gemma4:12b` (and optionally `gemma4:e2b`).
+
+### 3. Install Python dependencies
+
+```bash
+# macOS / Linux
+chmod +x scripts/*.sh          # first time only
+./scripts/setup-venv.sh
+
+# Windows (PowerShell)
+.\scripts\setup-venv.ps1
+```
+
+This creates `v3/.venv` and installs packages from `requirements.txt`.
+
+### 4. Install Node dependencies
+
+From `v3/`:
+
+```bash
+npm install
+```
+
+### 5. (Optional) Install Pi coding agent
+
+Only needed if you enable the experimental Pi tool bridge in `config.json`:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+./scripts/install-pi-models.sh        # macOS / Linux
+# .\scripts\install-pi-models.ps1     # Windows
 ```
+
+---
 
 ## Run
 
-Windows:
+From `v3/`:
 
-```powershell
-cd C:\Helper-Base\v3
+```bash
 npm run dev
 ```
 
-macOS / Linux:
+Then use the wake word or type in the UI. The assistant runs locally — you can turn off Wi‑Fi and keep chatting.
+
+**Low-resource mode:** enable **Low resource mode** in Settings, or set `python.lowResourceMode: true` in `config.json`, to use `gemma4:e2b` instead of `gemma4:12b`. Pull that model first.
+
+Override the model or endpoint with environment variables:
 
 ```bash
-cd v3
-npm run dev   # or ./scripts/dev.sh
+export PYTHOS_OLLAMA_MODEL=gemma4:12b
+export PYTHOS_OLLAMA_URL=http://127.0.0.1:11434
 ```
 
-## Android Remote over Tailscale
+---
 
-A native Android client lives at `android/pythos-remote`. It connects to this desktop bridge over Tailscale and sends prompts back to the PC, so local commands such as `open excel` still execute on Windows.
+## Optional configuration
 
-Use this server URL in the phone app:
+No API keys are required for typed chat, tools, or screen vision.
+
+| Variable | Purpose |
+|----------|---------|
+| `GRADIUM_API_KEY` | Spoken voice (STT + TTS) via [Gradium](https://studio.gradium.ai) |
+| `PYTHOS_OLLAMA_MODEL` | Override default model (`gemma4:12b`) |
+| `PYTHOS_OLLAMA_URL` | Override Ollama endpoint |
+| `PYTHOS_CURSOR_WORKSPACE` | Project path for Cursor agent delegation |
+| `PYTHOS_MCP_SANDBOX` | Root directory for MCP file tools |
+
+Create a local env file (gitignored):
+
+```bash
+cp .env.example .env
+# Edit .env, then load before launch:
+
+# macOS / Linux
+set -a; source ./.env; set +a && npm run dev
+
+# Windows PowerShell
+Copy-Item .env.example .env -Force
+# Add keys to .env, then set each var or use: Get-Content .env | ForEach-Object { ... }
+npm run dev
+```
+
+See [`v3/API_KEYS_SETUP.txt`](v3/API_KEYS_SETUP.txt) for the full reference.
+
+---
+
+## Testing
+
+From `v3/`:
+
+```bash
+npm test                 # TypeScript (Vitest)
+npm run test:python      # Python (pytest)
+
+# Or use the helper scripts:
+./scripts/test.sh        # macOS / Linux
+.\scripts\test.ps1       # Windows
+```
+
+---
+
+## Project structure
 
 ```text
-http://<pc-tailscale-ip-or-magicdns-name>:9000
+RAISE-Hackathon/
+├── README.md              ← you are here
+├── HACKATHON_PLAN.md      ← hackathon strategy notes
+└── v3/                    ← main application
+    ├── src/
+    │   ├── main/          ← Electron main process, Ollama, tools, MCP
+    │   ├── renderer/      ← React UI (voice orb, transcript)
+    │   ├── preload/       ← typed IPC bridge
+    │   └── pythos/        ← Python audio worker
+    ├── android/           ← optional Android remote client
+    ├── scripts/           ← setup, model install, test helpers
+    ├── config.json        ← runtime settings
+    ├── .env.example       ← optional env template
+    └── API_KEYS_SETUP.txt ← detailed env documentation
 ```
 
-The phone sends heartbeat events and appears as an orbiting node in the desktop orb while connected.
+---
 
-## Alexa / Echo Remote
+## Remote clients
 
-The same bridge also accepts Alexa/Echo clients on port `9000`.
+### Android (Tailscale)
 
-- Realtime websocket: `ws://<pc-tailscale-ip-or-magicdns-name>:9000/echo`
-- Audio prompt upload: `http://<pc-tailscale-ip-or-magicdns-name>:9000/api/audio/request`
-- Text prompt: `http://<pc-tailscale-ip-or-magicdns-name>:9000/api/text/request`
+Native client: `v3/android/pythos-remote`. Point it at your desktop bridge:
 
-Alexa/Echo clients can include `deviceId`, `sessionId`, and `deviceName` as query params or request fields. If an Echo websocket connects without identity fields, it is registered as `echo-node` and shown as `Alexa` in the desktop orbit.
-
-## Test
-
-Windows:
-
-```powershell
-cd C:\Helper-Base\v3
-.\scripts\test.ps1
+```text
+http://<tailscale-ip-or-magicdns-name>:9000
 ```
 
-macOS / Linux:
+Connected phones appear as orbiting nodes in the desktop UI.
 
-```bash
-cd v3
-./scripts/test.sh
-```
+### Alexa / Echo
 
-## Worker Protocol
+Same bridge on port `9000`:
 
-Commands are JSONL objects sent to stdin:
+- WebSocket: `ws://<host>:9000/echo`
+- Audio: `http://<host>:9000/api/audio/request`
+- Text: `http://<host>:9000/api/text/request`
 
-- `start_listening`
-- `stop_listening`
-- `speak`
-- `stop_speaking`
-- `shutdown`
+---
 
-Events are JSONL objects emitted to stdout:
+## Documentation
 
-- `state`
-- `audio_level`
-- `partial_transcript`
-- `final_transcript`
-- `tts_started`
-- `tts_done`
-- `error`
+- **[v3/README.md](v3/README.md)** — architecture, MCP setup, worker protocol, and technical notes
+- **[v3/API_KEYS_SETUP.txt](v3/API_KEYS_SETUP.txt)** — environment variables and verification steps
+- **[HACKATHON_PLAN.md](HACKATHON_PLAN.md)** — RAISE 2026 hackathon plan and demo strategy
 
-## Notes
+---
 
-- `config.json` defaults to low-resource hotkey-style operation.
-- The default ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk` for better recognition tolerance. It loads slower than the small model.
-- `scripts/install-vosk-model.ps1` (Windows) or `scripts/install-vosk-model.sh` (macOS/Linux) can reinstall the full Vosk model if it is missing. The smaller `vosk-model-small-en-us-0.15` model remains available as a faster fallback.
-- The Google AI Studio (Gemini) API is the LLM backend; set `GEMINI_API_KEY` in `v3/.env`.
-- The Pi bridge starts `pi --mode rpc --no-session --model gemini/gemini-2.5-flash`.
-- Pi custom models are included at `.pi/models.json`; `scripts/install-pi-models.ps1` (Windows) or `scripts/install-pi-models.sh` (macOS/Linux) copies that file to `~/.pi/agent/models.json`.
+## License
+
+This project was created for the RAISE Summit Hackathon. See repository history and individual skill directories for third-party licenses where applicable.

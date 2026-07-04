@@ -1,8 +1,9 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { appRoot, caBundleEnv, resolveWorkerPython } from "./config.js";
+import { appRoot, resolveWorkerPython, workerPythonEnv } from "./config.js";
 import { JsonlBuffer } from "./jsonl.js";
+import { createLogger } from "./logger.js";
 import type { WorkerEvent } from "../shared/types.js";
 
 type WorkerCommand =
@@ -26,13 +27,7 @@ export class PythonWorkerBridge extends EventEmitter {
 
     const python = resolveWorkerPython();
     debug(`starting python worker executable=${python}`);
-    const env = {
-      ...process.env,
-      ...caBundleEnv(),
-      PYTHOS_DEBUG: process.env.PYTHOS_DEBUG ?? "1",
-      PYTHONPATH: path.join(appRoot, "src"),
-      PYTHOS_CONFIG: path.join(appRoot, "config.json")
-    };
+    const env = workerPythonEnv({ PYTHOS_DEBUG: process.env.PYTHOS_DEBUG ?? "1" });
 
     const child = spawn(
       python,
@@ -122,10 +117,7 @@ export class PythonWorkerBridge extends EventEmitter {
   }
 }
 
-function debug(message: string): void {
-  const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false });
-  console.error(`[pythos-main ${timestamp}] pythonWorker ${message}`);
-}
+const debug = createLogger("pythonWorker");
 
 function isAudioLevelEvent(value: unknown): boolean {
   return Boolean(

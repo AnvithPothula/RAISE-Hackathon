@@ -5,6 +5,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { appRoot } from "./config.js";
 import { JsonlBuffer } from "./jsonl.js";
+import { createLogger } from "./logger.js";
 import type { PiEvent, PiStatus } from "../shared/types.js";
 
 type PiConfig = {
@@ -164,10 +165,7 @@ export class PiRpcBridge extends EventEmitter {
   }
 }
 
-function debug(message: string): void {
-  const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false });
-  console.error(`[pythos-main ${timestamp}] piRpc ${message}`);
-}
+const debug = createLogger("piRpc");
 
 function resolvePiLaunch(config: PiConfig): { command: string; args: string[] } | null {
   if (path.isAbsolute(config.command) && fs.existsSync(config.command)) {

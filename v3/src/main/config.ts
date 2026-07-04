@@ -188,3 +188,14 @@ export function caBundleEnv(): Record<string, string> {
   const bundle = resolveCaBundle();
   return bundle ? { SSL_CERT_FILE: bundle } : {};
 }
+
+/** Shared spawn environment for Python worker subprocesses. */
+export function workerPythonEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...caBundleEnv(),
+    PYTHONPATH: path.join(appRoot, "src"),
+    PYTHOS_CONFIG: path.join(appRoot, "config.json"),
+    ...extra
+  };
+}

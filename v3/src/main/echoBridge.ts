@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { Duplex } from "node:stream";
 import { URL } from "node:url";
-import { appRoot, caBundleEnv, resolveWorkerPython } from "./config.js";
+import { appRoot, resolveWorkerPython, workerPythonEnv } from "./config.js";
 
 type EchoPromptContext = {
   deviceId: string;
@@ -171,12 +171,7 @@ class EchoRealtimeProcessor extends EventEmitter {
       return;
     }
     const python = resolveWorkerPython();
-    const env = {
-      ...process.env,
-      ...caBundleEnv(),
-      PYTHONPATH: path.join(appRoot, "src"),
-      PYTHOS_CONFIG: path.join(appRoot, "config.json")
-    };
+    const env = workerPythonEnv();
     const child = spawn(
       python,
       ["-m", "pythos.echo_realtime_worker", "--config", path.join(appRoot, "config.json")],
@@ -868,15 +863,9 @@ export class EchoBridge extends EventEmitter {
 
 function runPythonJson(args: string[]): Promise<Record<string, unknown>> {
   const python = resolveWorkerPython();
-  const env = {
-    ...process.env,
-    ...caBundleEnv(),
-    PYTHONPATH: path.join(appRoot, "src"),
-    PYTHOS_CONFIG: path.join(appRoot, "config.json")
-  };
 
   return new Promise((resolve, reject) => {
-    const child = spawn(python, args, { cwd: appRoot, env });
+    const child = spawn(python, args, { cwd: appRoot, env: workerPythonEnv() });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

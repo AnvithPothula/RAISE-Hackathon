@@ -58,6 +58,16 @@ async function listPulledModelNames(config?: AppConfig): Promise<string[]> {
   }
 }
 
+/** Prefer the full Gemma model for vision even in low-resource chat mode. */
+async function resolveVisionModel(config?: AppConfig): Promise<string> {
+  const pulled = await listPulledModelNames(config);
+  const fullModel = config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
+  if (pulled.includes(fullModel)) {
+    return fullModel;
+  }
+  return resolveInstalledOllamaModel(config);
+}
+
 /** Pick a pulled model, falling back from low-resource to the default when needed. */
 export async function resolveInstalledOllamaModel(config?: AppConfig): Promise<string> {
   const preferred = resolveOllamaModel(config);
@@ -545,7 +555,7 @@ export async function analyzeImageWithOllama(
   }
 
   const body = {
-    model: await resolveInstalledOllamaModel(config),
+    model: await resolveVisionModel(config),
     stream: false,
     think: false,
     keep_alive: KEEP_ALIVE,

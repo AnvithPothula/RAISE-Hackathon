@@ -42,6 +42,8 @@ Work created at the event (see git history on `main`):
 
 ## Setup
 
+> **Start here:** clone the repo, then work from the `v3/` directory. See the [root README](../README.md) for full install instructions.
+
 ### 1. Install the local model (the brain)
 
 ```bash
@@ -60,14 +62,17 @@ ollama pull gemma4:e2b   # optional
 
 ### 2. Install app dependencies
 
+From the `v3/` directory:
+
 ```bash
 # macOS / Linux
+chmod +x scripts/*.sh          # first time only
 ./scripts/setup-venv.sh
 npm install
 
 # Windows PowerShell
-# .\scripts\setup-venv.ps1
-# npm install
+.\scripts\setup-venv.ps1
+npm install
 ```
 
 No API key is required to run the assistant. For spoken voice (optional), add

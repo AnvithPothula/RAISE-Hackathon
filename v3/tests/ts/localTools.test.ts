@@ -4,8 +4,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   extractLocationFromPrompt,
-  resolveContextualLocalTool,
-  resolveDirectLocalTool,
   runNamedLocalTool
 } from "../../src/main/localTools";
 
@@ -351,133 +349,8 @@ describe("runNamedLocalTool", () => {
   });
 });
 
-describe("resolveDirectLocalTool", () => {
-  it("routes explicit known app launch commands without model help", () => {
-    expect(resolveDirectLocalTool("open excel")).toEqual({ name: "open_app", args: { app: "excel" } });
-    expect(resolveDirectLocalTool("please launch notes")).toEqual({ name: "open_app", args: { app: "notes" } });
-    expect(resolveDirectLocalTool("open excel please")).toEqual({ name: "open_app", args: { app: "excel" } });
-    expect(resolveDirectLocalTool("Open Discord")).toEqual({ name: "open_app", args: { app: "Discord" } });
-    expect(resolveDirectLocalTool("open slack")).toEqual({ name: "open_app", args: { app: "slack" } });
-  });
-
-  it("handles filler words like 'open up X' and 'launch my X'", () => {
-    expect(resolveDirectLocalTool("open up chrome")).toEqual({ name: "open_app", args: { app: "chrome" } });
-    expect(resolveDirectLocalTool("Open up Chrome.")).toEqual({ name: "open_app", args: { app: "Chrome" } });
-    expect(resolveDirectLocalTool("launch my calculator")).toEqual({ name: "open_app", args: { app: "calculator" } });
-    expect(resolveDirectLocalTool("pull up spotify")).toEqual({ name: "open_app", args: { app: "spotify" } });
-  });
-
-  it("routes explicit website launch commands without model help", () => {
-    expect(resolveDirectLocalTool("open youtube")).toEqual({ name: "open_website", args: { url: "youtube" } });
-    expect(resolveDirectLocalTool("open example.com")).toEqual({ name: "open_website", args: { url: "example.com" } });
-  });
-
-  it("routes weather and time questions without model help", () => {
-    expect(resolveDirectLocalTool("How is the weather like in Eagan, MN?")).toEqual({
-      name: "weather",
-      args: { location: "Eagan, MN" }
-    });
-    expect(resolveDirectLocalTool("what's the weather in Boston")).toEqual({
-      name: "weather",
-      args: { location: "Boston" }
-    });
-    expect(resolveDirectLocalTool("what time is it in Tokyo")).toEqual({
-      name: "time",
-      args: { location: "Tokyo" }
-    });
-    expect(resolveDirectLocalTool("what time is it")).toEqual({ name: "time", args: {} });
-  });
-
-  it("routes Spotify playback controls without model help", () => {
-    expect(resolveDirectLocalTool("play people pleaser on spotify")).toEqual({
-      name: "spotify",
-      args: { action: "play", query: "people pleaser", kind: "track" }
-    });
-    expect(resolveDirectLocalTool("skip this song on spotify")).toEqual({ name: "spotify", args: { action: "next" } });
-    expect(resolveDirectLocalTool("please resume spotify")).toEqual({ name: "spotify", args: { action: "resume" } });
-    expect(resolveDirectLocalTool("pause spotify")).toEqual({ name: "spotify", args: { action: "pause" } });
-  });
-
-  it("routes Spotify setup and settings commands without model help", () => {
-    expect(resolveDirectLocalTool("log in to spotify")).toEqual({ name: "spotify", args: { action: "login" } });
-    expect(resolveDirectLocalTool("what's playing on spotify")).toEqual({ name: "spotify", args: { action: "status" } });
-    expect(resolveDirectLocalTool("set spotify volume to 35%")).toEqual({
-      name: "spotify",
-      args: { action: "volume", percent: 35 }
-    });
-    expect(resolveDirectLocalTool("turn shuffle on spotify off")).toEqual({
-      name: "spotify",
-      args: { action: "shuffle", state: "false" }
-    });
-  });
-
-  it("routes media follow-ups to Spotify only after Spotify context", () => {
-    expect(resolveDirectLocalTool("please skip this song")).toBeNull();
-    expect(resolveContextualLocalTool("please skip this song", null)).toBeNull();
-    expect(resolveContextualLocalTool("please skip this song", "spotify")).toEqual({
-      name: "spotify",
-      args: { action: "next" }
-    });
-    expect(resolveContextualLocalTool("pause it", "spotify")).toEqual({
-      name: "spotify",
-      args: { action: "pause" }
-    });
-    expect(resolveContextualLocalTool("what's playing", "spotify")).toEqual({
-      name: "spotify",
-      args: { action: "status" }
-    });
-  });
-
-  it("ignores non-launch prompts", () => {
-    expect(resolveDirectLocalTool("what is open source software")).toBeNull();
-    expect(resolveDirectLocalTool("open the pod bay doors")).toBeNull();
-  });
-
-  it("answers capability questions instantly without the model", () => {
-    expect(resolveDirectLocalTool("What can you do?")).toEqual({ name: "capabilities", args: {} });
-    expect(resolveDirectLocalTool("what can you do")).toEqual({ name: "capabilities", args: {} });
-    expect(resolveDirectLocalTool("what are you capable of")).toEqual({ name: "capabilities", args: {} });
-    // Not a capability question — must not hijack.
-    expect(resolveDirectLocalTool("what is open source software")).toBeNull();
-  });
-
-  it("routes clipboard reads straight to the local clipboard tool", () => {
-    expect(resolveDirectLocalTool("What's on my clipboard?")).toEqual({ name: "clipboard", args: {} });
-    expect(resolveDirectLocalTool("read my clipboard")).toEqual({ name: "clipboard", args: {} });
-    expect(resolveDirectLocalTool("check my clipboard")).toEqual({ name: "clipboard", args: {} });
-    // Unrelated prompts must not trigger the clipboard tool.
-    expect(resolveDirectLocalTool("what is a clipboard")).not.toEqual({ name: "clipboard", args: {} });
-  });
-
-  it("routes screen questions straight to local vision", () => {
-    // Trailing punctuation is stripped by the direct-prompt cleaner.
-    expect(resolveDirectLocalTool("What's on my screen?")).toEqual({
-      name: "screen",
-      args: { query: "What's on my screen" }
-    });
-    expect(resolveDirectLocalTool("read my screen")).toEqual({ name: "screen", args: { query: "read my screen" } });
-    expect(resolveDirectLocalTool("what am I looking at")).toEqual({
-      name: "screen",
-      args: { query: "what am I looking at" }
-    });
-    // A normal "open" request must not be captured as a screen request.
-    expect(resolveDirectLocalTool("open excel")).toEqual({ name: "open_app", args: { app: "excel" } });
-  });
-
-  it("routes generic play requests to Spotify without the model", () => {
-    expect(resolveDirectLocalTool("Play something relaxing")).toEqual({
-      name: "spotify",
-      args: { action: "play", kind: "track", query: "something relaxing" }
-    });
-    expect(resolveDirectLocalTool("play some jazz")).toEqual({
-      name: "spotify",
-      args: { action: "play", kind: "track", query: "jazz" }
-    });
-  });
-});
-
 describe("capabilities tool", () => {
-  it("returns a spoken capability summary with no model call", async () => {
+  it("returns a spoken capability summary", async () => {
     const result = await runNamedLocalTool("capabilities", {}, null);
     expect(result.name).toBe("capabilities");
     expect(result.text.toLowerCase()).toContain("on-device");

@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { appRoot } from "./config.js";
+import { createLogger } from "./logger.js";
 import type {
   McpConfig,
   McpServerConfig,
@@ -494,7 +495,4 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-function debug(message: string): void {
-  const timestamp = new Date().toLocaleTimeString("en-US", { hour12: false });
-  console.error(`[pythos-main ${timestamp}] mcp ${message}`);
-}
+const debug = createLogger("mcp");
