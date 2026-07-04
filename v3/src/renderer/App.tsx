@@ -815,6 +815,36 @@ function SidePanel({
   onResizeStart: (event: React.MouseEvent) => void;
 }) {
   const activityCount = toolEvents.length;
+  const conversationListRef = useRef<HTMLDivElement>(null);
+  const toolListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (sideTab !== "chat") {
+      return;
+    }
+    const container = conversationListRef.current;
+    if (!container) {
+      return;
+    }
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 64;
+    if (nearBottom || visibleConversation.length <= 1) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [sideTab, visibleConversation, streamingText]);
+
+  useEffect(() => {
+    if (sideTab !== "activity") {
+      return;
+    }
+    const container = toolListRef.current;
+    if (!container) {
+      return;
+    }
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 64;
+    if (nearBottom || toolEvents.length <= 1) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [sideTab, toolEvents]);
 
   return (
     <aside className="side-panel">
@@ -876,7 +906,7 @@ function SidePanel({
         </header>
 
         {sideTab === "chat" ? (
-          <div className="conversation-list" role="tabpanel">
+          <div className="conversation-list" ref={conversationListRef} role="tabpanel">
             {visibleConversation.length === 0 ? (
               <div className="empty-state">
                 <MessageSquare size={28} />
@@ -912,7 +942,7 @@ function SidePanel({
             )}
             <div className="activity-block fill">
               <h3>Tool runs</h3>
-              <div className="tool-list">
+              <div className="tool-list" ref={toolListRef}>
                 {toolEvents.length === 0 ? (
                   <div className="empty-state compact">
                     <Wrench size={24} />
