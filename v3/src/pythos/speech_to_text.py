@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import contextlib
 import json
 import math
 from pathlib import Path
@@ -26,9 +29,7 @@ class SpeechListener:
         self._request_id = 0
         self._preload_thread: threading.Thread | None = None
         self._wake_model_lock = threading.Lock()
-        self._vosk_model_lock = threading.Lock()
         self._wake_model: Any | None = None
-        self._vosk_model: Any | None = None
 
     def preload(self) -> None:
         if self._preload_thread and self._preload_thread.is_alive():
@@ -162,8 +163,6 @@ class SpeechListener:
     def _preload_models(self) -> None:
         try:
             started = time.perf_counter()
-            debug("preload loading Vosk model")
-            self._get_vosk_model()
             debug("preload loading wake model")
             self._get_wake_model()
             debug(f"preload complete elapsed={time.perf_counter() - started:.2f}s")
@@ -174,11 +173,9 @@ class SpeechListener:
     def _listen_once(self, stop_event: threading.Event) -> None:
         try:
             import pyaudio
-            import vosk
 
-            vosk.SetLogLevel(-1)
-            debug("PTT creating recognizer")
-            recognizer = vosk.KaldiRecognizer(self._get_vosk_model(), self._config.audio.rate)
+            if not self._config.gradium.is_configured:
+                raise RuntimeError("GRADIUM_API_KEY is not set; cannot transcribe speech.")
             if stop_event.is_set():
                 debug("PTT cancelled before microphone open")
                 self._emit_state("idle", stop_event)
@@ -195,7 +192,7 @@ class SpeechListener:
             try:
                 debug("PTT state=listening")
                 self._emit_state("listening", stop_event)
-                self._listen_stream(stream.read, recognizer, stop_event)
+                self._transcribe(stream.read, stop_event)
             finally:
                 debug("PTT closing microphone stream")
                 stream.stop_stream()
@@ -210,16 +207,14 @@ class SpeechListener:
     def _wakeword_once(self, stop_event: threading.Event) -> None:
         try:
             import pyaudio
-            import vosk
 
-            vosk.SetLogLevel(-1)
+            if not self._config.gradium.is_configured:
+                raise RuntimeError("GRADIUM_API_KEY is not set; cannot transcribe speech.")
             debug("wakeword getting wake model")
             wake_model = self._get_wake_model()
             if hasattr(wake_model, "reset"):
                 wake_model.reset()
                 debug("wakeword model reset")
-            debug("wakeword creating recognizer")
-            recognizer = vosk.KaldiRecognizer(self._get_vosk_model(), self._config.audio.rate)
             if stop_event.is_set():
                 debug("wakeword cancelled before microphone open")
                 self._emit_state("idle", stop_event)
@@ -247,10 +242,9 @@ class SpeechListener:
                             f"wakeword detected word={self._config.audio.wake_word} "
                             f"score={score:.3f} threshold={self._config.audio.wake_threshold}"
                         )
-                        recognizer.Reset()
                         self._set_active_mode("listening", stop_event)
                         self._emit_state("listening", stop_event)
-                        self._listen_stream(stream.read, recognizer, stop_event)
+                        self._transcribe(stream.read, stop_event)
                         return
                 debug("wakeword stop_event set; returning idle")
                 self._emit_state("idle", stop_event)
@@ -264,20 +258,6 @@ class SpeechListener:
             if self._is_current_stop_event(stop_event):
                 self._events.emit("state", value="error")
                 self._events.emit("error", source="wakeword", message=str(exc))
-
-    def _get_vosk_model(self) -> Any:
-        if self._vosk_model is not None:
-            return self._vosk_model
-        with self._vosk_model_lock:
-            if self._vosk_model is None:
-                import vosk
-
-                vosk.SetLogLevel(-1)
-                started = time.perf_counter()
-                debug(f"loading Vosk model path={self._config.models.vosk}")
-                self._vosk_model = vosk.Model(str(self._config.models.vosk))
-                debug(f"loaded Vosk model elapsed={time.perf_counter() - started:.2f}s")
-            return self._vosk_model
 
     def _get_wake_model(self) -> Any:
         if self._wake_model is not None:
@@ -298,57 +278,102 @@ class SpeechListener:
                 debug(f"loaded wake model elapsed={time.perf_counter() - started:.2f}s")
             return self._wake_model
 
-    def _listen_stream(
-        self,
-        read: Callable[..., bytes],
-        recognizer: object,
-        stop_event: threading.Event,
-    ) -> None:
+    def _transcribe(self, read: Callable[..., bytes], stop_event: threading.Event) -> None:
+        """Stream microphone audio to Gradium STT and emit transcripts.
+
+        Runs the async streaming session on a private event loop for the duration
+        of this listening turn. Partial transcripts are emitted as segments arrive;
+        the turn ends on Gradium's semantic VAD, the ASR timeout, or a stop request.
+        """
+        try:
+            asyncio.run(self._transcribe_async(read, stop_event))
+        except Exception as exc:
+            debug(f"gradium transcribe error: {exc}")
+            if self._is_current_stop_event(stop_event):
+                self._events.emit("state", value="error")
+                self._events.emit("error", source="asr", message=str(exc))
+        finally:
+            self._emit_state("idle", stop_event)
+
+    async def _transcribe_async(self, read: Callable[..., bytes], stop_event: threading.Event) -> None:
+        import websockets
+
+        cfg = self._config.gradium
+        url = f"{cfg.base_ws_url}/speech/asr"
+        setup = {
+            "type": "setup",
+            "model_name": cfg.stt_model,
+            "input_format": cfg.stt_input_format,
+        }
+        loop = asyncio.get_event_loop()
+        chunk = self._config.audio.chunk
         started = time.time()
-        last_speech = time.time()
+        turn_done = asyncio.Event()
+        segments: list[str] = []
         last_partial = ""
 
-        while not stop_event.is_set():
-            data = read(self._config.audio.chunk, exception_on_overflow=False)
-            self._events.emit("audio_level", value=_rms_level(data))
+        debug(f"gradium stt connecting url={url} format={cfg.stt_input_format}")
+        async with websockets.connect(url, additional_headers={"x-api-key": cfg.api_key}) as ws:
+            await ws.send(json.dumps(setup))
+            ready = json.loads(await ws.recv())
+            if ready.get("type") != "ready":
+                raise RuntimeError(f"Unexpected STT handshake response: {ready}")
 
-            if recognizer.AcceptWaveform(data):
-                result = json.loads(recognizer.Result())
-                text = result.get("text", "").strip()
-                if text:
-                    debug(f"final transcript accepted text={text!r}")
-                    if self._is_current_stop_event(stop_event):
-                        self._events.emit("final_transcript", text=text)
-                    self._emit_state("idle", stop_event)
-                    return
-                last_speech = time.time()
-            else:
-                partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
-                if partial and partial != last_partial:
-                    last_partial = partial
-                    last_speech = time.time()
-                    debug(f"partial transcript text={partial!r}")
-                    if self._is_current_stop_event(stop_event):
-                        self._events.emit("partial_transcript", text=partial)
+            async def producer() -> None:
+                while not stop_event.is_set() and not turn_done.is_set():
+                    data = await loop.run_in_executor(
+                        None, lambda: read(chunk, exception_on_overflow=False)
+                    )
+                    self._events.emit("audio_level", value=_rms_level(data))
+                    await ws.send(
+                        json.dumps({"type": "audio", "audio": base64.b64encode(data).decode()})
+                    )
+                    if time.time() - started > self._config.audio.asr_timeout_seconds:
+                        debug("gradium stt ASR timeout")
+                        break
+                with contextlib.suppress(Exception):
+                    await ws.send(json.dumps({"type": "end_of_stream"}))
 
-            if time.time() - started > self._config.audio.asr_timeout_seconds:
-                debug("listen stream ASR timeout")
-                self._emit_state("idle", stop_event)
-                return
+            async def consumer() -> None:
+                nonlocal last_partial
+                async for raw in ws:
+                    msg = json.loads(raw)
+                    kind = msg.get("type")
+                    if kind == "text":
+                        text = str(msg.get("text", "")).strip()
+                        if text:
+                            segments.append(text)
+                            partial = " ".join(segments).strip()
+                            if partial and partial != last_partial:
+                                last_partial = partial
+                                debug(f"gradium partial text={partial!r}")
+                                if self._is_current_stop_event(stop_event):
+                                    self._events.emit("partial_transcript", text=partial)
+                    elif kind == "step":
+                        vad = msg.get("vad") or []
+                        idx = cfg.vad_horizon_index
+                        if (
+                            segments
+                            and len(vad) > idx
+                            and float(vad[idx].get("inactivity_prob", 0.0))
+                            > cfg.vad_inactivity_threshold
+                        ):
+                            debug("gradium stt end-of-turn via semantic VAD")
+                            turn_done.set()
+                            return
+                    elif kind == "end_of_stream":
+                        return
+                    elif kind == "error":
+                        raise RuntimeError(msg.get("message", "Gradium STT error"))
 
-            if time.time() - last_speech > self._config.audio.silence_timeout_seconds:
-                final = json.loads(recognizer.FinalResult()).get("text", "").strip()
-                if final:
-                    debug(f"final transcript after silence text={final!r}")
-                    if self._is_current_stop_event(stop_event):
-                        self._events.emit("final_transcript", text=final)
-                else:
-                    debug("listen stream silence timeout without final transcript")
-                self._emit_state("idle", stop_event)
-                return
+            await asyncio.gather(producer(), consumer())
 
-        debug("listen stream stop_event set")
-        self._emit_state("idle", stop_event)
+        final = " ".join(segments).strip()
+        if final and self._is_current_stop_event(stop_event):
+            debug(f"gradium final transcript text={final!r}")
+            self._events.emit("final_transcript", text=final)
+        elif not final:
+            debug("gradium stt produced no transcript")
 
 
 def _rms_level(audio_bytes: bytes) -> float:
