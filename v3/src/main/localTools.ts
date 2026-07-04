@@ -24,6 +24,7 @@ export type LocalToolResult = {
     | "memory"
     | "capabilities"
     | "clipboard"
+    | "list_folder"
     | "spotify";
   text: string;
   location?: string;
@@ -74,6 +75,7 @@ export type LocalToolArgs = {
   app?: string | null;
   url?: string | null;
   query?: string | null;
+  path?: string | null;
   task?: string | null;
   text?: string | null;
   category?: string | null;
@@ -310,14 +312,6 @@ export function resolveDirectLocalTool(
     return spotifyInvocation;
   }
 
-  const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
-  if (playMatch) {
-    const query = playMatch[1].replace(/\b(on|in|through|via)\s+spotify\b/i, "").replace(/\s+for me$/i, "").trim();
-    if (query && !/^(the\s+)?(game|video|movie|film|episode|show)\b/i.test(query)) {
-      return { name: "spotify", args: { action: "play", kind: "track", query } };
-    }
-  }
-
   return null;
 }
 
@@ -401,6 +395,10 @@ export async function runNamedLocalTool(
 
   if (name === "clipboard") {
     return readClipboard();
+  }
+
+  if (name === "list_folder") {
+    return listFolder(args.path ?? args.query ?? "");
   }
 
   const requestedLocation = cleanLocation(args.location ?? "");
@@ -1526,6 +1524,43 @@ async function readClipboard(): Promise<LocalToolResult> {
   }
   const clipped = text.length > 1200 ? `${text.slice(0, 1200)}… (truncated)` : text;
   return { name: "clipboard", text: `Your clipboard contains: ${clipped}` };
+}
+
+const HOME_FOLDER_ALIASES: Record<string, string> = {
+  downloads: "Downloads",
+  download: "Downloads",
+  desktop: "Desktop",
+  documents: "Documents",
+  pictures: "Pictures",
+  music: "Music",
+  movies: "Movies",
+  home: "."
+};
+
+/** List a folder under the user's home directory without an LLM or MCP round-trip. */
+function listFolder(pathArg: string): LocalToolResult {
+  const homedir = os.homedir();
+  const normalized = pathArg.toLowerCase().replace(/\s+folder$/, "").trim();
+  const segment = HOME_FOLDER_ALIASES[normalized] ?? pathArg.trim();
+  const resolved = segment === "." ? homedir : path.join(homedir, segment);
+  const resolvedReal = path.resolve(resolved);
+  if (!resolvedReal.startsWith(homedir)) {
+    return { name: "list_folder", text: "I can only list folders in your home directory." };
+  }
+  try {
+    const entries = fs.readdirSync(resolvedReal, { withFileTypes: true }).slice(0, 30);
+    if (!entries.length) {
+      return { name: "list_folder", text: `${path.basename(resolvedReal) || "home"} is empty.` };
+    }
+    const lines = entries.map((entry) => `${entry.isDirectory() ? "folder" : "file"}: ${entry.name}`);
+    const suffix = entries.length >= 30 ? "\n(showing first 30 items)" : "";
+    return {
+      name: "list_folder",
+      text: `In ${path.basename(resolvedReal) || "home"}:\n${lines.join("\n")}${suffix}`
+    };
+  } catch (error) {
+    return { name: "list_folder", text: `I couldn't read that folder: ${String(error)}` };
+  }
 }
 
 /** Instant, model-free capability summary for "what can you do?" style prompts. */

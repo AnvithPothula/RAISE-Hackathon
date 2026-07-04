@@ -59,12 +59,17 @@ type ToolCallOutcome = {
 
 /** Compose the full system prompt: base prompt + dynamic skills + MCP tool list. */
 export function readSystemPrompt(mcp?: McpManager, toolScope: LlmToolScope = "full"): string {
-  const includeMcp = toolScope !== "minimal";
+  const includeMcp = toolScope !== "minimal" && toolScope !== "none";
   const includeSkills = toolScope === "full";
+  const noneNote =
+    toolScope === "none"
+      ? "\n\nFor this request, no tools are available. Answer directly from your knowledge without calling any function."
+      : "";
   return [
     fs.readFileSync(systemPromptPath, "utf-8").trim(),
     includeSkills ? buildDynamicSkillPrompt() : "",
-    includeMcp ? buildMcpPrompt(mcp) : ""
+    includeMcp ? buildMcpPrompt(mcp) : "",
+    noneNote
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -328,6 +333,9 @@ const CURSOR_AGENT_DECLARATION = {
  * is never offered a tool that cannot work.
  */
 export function buildFunctionDeclarations(toolScope: LlmToolScope = "full"): Array<Record<string, unknown>> {
+  if (toolScope === "none") {
+    return [];
+  }
   const declarations: Array<Record<string, unknown>> = FUNCTION_DECLARATIONS.filter((declaration) =>
     isDeclarationAllowed(String(declaration.name), toolScope)
   );
@@ -338,6 +346,9 @@ export function buildFunctionDeclarations(toolScope: LlmToolScope = "full"): Arr
 }
 
 function isDeclarationAllowed(name: string, toolScope: LlmToolScope): boolean {
+  if (toolScope === "none") {
+    return false;
+  }
   if (toolScope === "full") {
     return true;
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeUserIntent } from "../../src/main/intentRouter.js";
+import { buildFunctionDeclarations } from "../../src/main/toolRuntime.js";
 
 describe("routeUserIntent", () => {
   it("routes easy weather without the LLM", () => {
@@ -20,11 +21,33 @@ describe("routeUserIntent", () => {
     expect(decision.invocation?.name).toBe("memory");
   });
 
-  it("uses minimal tools for simple conversational prompts", () => {
+  it("uses no tools for general-knowledge chat", () => {
     const decision = routeUserIntent("tell me something interesting about Minnesota");
     expect(decision.difficulty).toBe("simple");
     expect(decision.invocation).toBeNull();
-    expect(decision.llmToolScope).toBe("minimal");
+    expect(decision.llmToolScope).toBe("none");
+  });
+
+  it("uses no tools for factual history questions", () => {
+    const decision = routeUserIntent("why do we celebrate the 4th of July");
+    expect(decision.difficulty).toBe("simple");
+    expect(decision.llmToolScope).toBe("none");
+    expect(decision.invocation).toBeNull();
+  });
+
+  it("routes play requests instantly to Spotify", () => {
+    const decision = routeUserIntent("Play something relaxing");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "spotify",
+      args: { action: "play", kind: "track", query: "something relaxing" }
+    });
+  });
+
+  it("routes folder listing instantly", () => {
+    const decision = routeUserIntent("What is in my download folder?");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "list_folder", args: { path: "download" } });
   });
 
   it("uses full tools for research prompts", () => {
@@ -43,5 +66,17 @@ describe("routeUserIntent", () => {
       name: "weather",
       args: { location: "Eagan, Minnesota" }
     });
+  });
+});
+
+describe("buildFunctionDeclarations tool scopes", () => {
+  it("returns zero declarations for none scope", () => {
+    expect(buildFunctionDeclarations("none")).toEqual([]);
+  });
+
+  it("returns a trimmed set for minimal scope", () => {
+    const names = buildFunctionDeclarations("minimal").map((tool) => tool.name);
+    expect(names).toContain("get_weather");
+    expect(names).not.toContain("deep_research");
   });
 });

@@ -514,8 +514,11 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     previousToolName: lastRetryableTool?.name ?? null,
     knownLocation
   });
-  const contextualInvocation =
-    directInvocation ?? resolveContextualLocalTool(prompt, lastRetryableTool?.name ?? null, knownLocation);
+  const contextualInvocation = resolveContextualLocalTool(
+    prompt,
+    lastRetryableTool?.name ?? null,
+    knownLocation
+  );
   const invocation = directInvocation ?? contextualInvocation;
   const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
   if (!invocation) {
@@ -724,11 +727,14 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
 
   try {
     debug(`gemma response starting reason="${reason}" promptChars=${prompt.length}`);
+    const routing = routeUserIntent(prompt, { knownLocation });
     emitDebugEvent("gemma fallback request", {
       source: "fallback",
       model: resolveActiveModel(config),
       promptChars: prompt.length,
-      reason
+      reason,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope
     });
     broadcast("assistant:state", "thinking");
     broadcast("pi:event", {
@@ -742,6 +748,7 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
+        toolScope: routing.llmToolScope,
         onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" }),
         onModelStats: broadcastModelStats
       })
