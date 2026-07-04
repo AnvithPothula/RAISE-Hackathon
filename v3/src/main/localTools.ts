@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
 import type { UserMemoryService } from "./userMemory.js";
 
@@ -41,6 +42,10 @@ export type AppOpenOutcome = {
 };
 
 export type LocalToolName = LocalToolResult["name"];
+export type LocalToolInvocation = {
+  name: LocalToolName;
+  args: LocalToolArgs;
+};
 export type LocalToolServices = {
   captureScreen?: () => Promise<{ path: string; width: number; height: number }>;
   analyzeScreen?: (path: string, prompt: string) => Promise<string>;
@@ -273,6 +278,71 @@ const WEBSITE_ALIASES: Record<string, string> = {
 export function extractUserLocation(prompt: string): string | null {
   const match = prompt.match(/\b(?:i am|i'm|im|i live|i live in|my location is|set location to)\s+(?:in\s+)?([a-z][a-z\s,.-]{2,})$/i);
   return cleanLocation(match?.[1] ?? "");
+}
+
+export async function runLocalTool(
+  prompt: string,
+  knownLocation: string | null,
+  services: LocalToolServices = {}
+): Promise<LocalToolResult | null> {
+  const normalized = prompt.toLowerCase();
+  if (/\b(weather|forecast|temperature|temp|rain|snow|wind)\b/.test(normalized)) {
+    return getWeather(prompt, knownLocation, services);
+  }
+  if (/\b(time|date|day)\b/.test(normalized) && /\b(what|current|now|today|tonight|tomorrow|date|time)\b/.test(normalized)) {
+    return getTime(prompt, knownLocation, services);
+  }
+  return null;
+}
+
+export function resolveDirectLocalTool(
+  prompt: string,
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+): LocalToolInvocation | null {
+  const decision = routeUserIntent(prompt, context);
+  if (decision.invocation) {
+    return decision.invocation;
+  }
+
+  const cleanPrompt = cleanDirectPrompt(prompt);
+  const spotifyInvocation = resolveDirectSpotifyTool(cleanPrompt);
+  if (spotifyInvocation) {
+    return spotifyInvocation;
+  }
+
+  const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
+  if (playMatch) {
+    const query = playMatch[1].replace(/\b(on|in|through|via)\s+spotify\b/i, "").replace(/\s+for me$/i, "").trim();
+    if (query && !/^(the\s+)?(game|video|movie|film|episode|show)\b/i.test(query)) {
+      return { name: "spotify", args: { action: "play", kind: "track", query } };
+    }
+  }
+
+  return null;
+}
+
+export function resolveContextualLocalTool(
+  prompt: string,
+  previousToolName: LocalToolName | null | undefined,
+  knownLocation?: string | null
+): LocalToolInvocation | null {
+  const contextual = resolveContextualFromRouter(prompt, previousToolName, knownLocation);
+  if (contextual) {
+    return contextual;
+  }
+  const cleanPrompt = cleanDirectPrompt(prompt);
+  if (previousToolName === "spotify") {
+    return resolveContextualSpotifyTool(cleanPrompt);
+  }
+  return null;
+}
+
+function cleanDirectPrompt(prompt: string): string {
+  return String(prompt ?? "")
+    .trim()
+    .replace(/[.!?]+$/g, "")
+    .replace(/^(?:hey\s+)?pythos[,:\s]+/i, "")
+    .trim();
 }
 
 export async function runNamedLocalTool(
@@ -924,6 +994,277 @@ function stripOpenIntentWords(value: string): string {
     .trim();
 }
 
+function resolveDirectWeatherTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (!/\b(weather|forecast|temperature|temp|rain|snow|wind|humidity|sunny|cloudy)\b/.test(normalized)) {
+    return null;
+  }
+  const location = extractLocationFromPrompt(prompt);
+  return { name: "weather", args: location ? { location } : {} };
+}
+
+function resolveDirectTimeTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (/\b(weather|forecast|temperature|temp|rain|snow|wind)\b/.test(normalized)) {
+    return null;
+  }
+  const asksTime =
+    /\b(what time|what s the time|whats the time|current time|time is it|what date|what s the date|what day)\b/.test(
+      normalized
+    ) ||
+    (/\b(time|date|day)\b/.test(normalized) && /\b(what|current|now|today|tonight|tomorrow)\b/.test(normalized));
+  if (!asksTime) {
+    return null;
+  }
+  const location = extractLocationFromPrompt(prompt);
+  return { name: "time", args: location ? { location } : {} };
+}
+
+function resolveDirectSpotifyTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (!/\bspotify\b/.test(normalized)) {
+    return null;
+  }
+
+  const volumePercent = spotifyVolumePercent(normalized);
+  if (volumePercent !== null) {
+    return { name: "spotify", args: { action: "volume", percent: volumePercent } };
+  }
+
+  if (/\b(log\s*in|login|authorize|reauthorize|connect)\b.*\bspotify\b|\bspotify\b.*\b(log\s*in|login|authorize|reauthorize|connect)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "login" } };
+  }
+  if (/\b(list|show|get|what(?:'s| is)?)\b.*\b(devices|speakers|players)\b.*\bspotify\b|\bspotify\b.*\b(devices|speakers|players)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "devices" } };
+  }
+  if (/\b(what(?:'s| is)? playing|current (song|track|playback)|spotify status|status (?:of|for|on) spotify)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "status" } };
+  }
+  if (/\b(pause|stop)\b.*\bspotify\b|\bspotify\b.*\b(pause|stop)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "pause" } };
+  }
+  if (/\b(resume|continue|unpause)\b.*\bspotify\b|\bspotify\b.*\b(resume|continue|unpause)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "resume" } };
+  }
+  if (/\b(skip|next)\b.*\bspotify\b|\bspotify\b.*\b(skip|next)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "next" } };
+  }
+  if (/\b(previous|prev|back|last)\b.*\bspotify\b|\bspotify\b.*\b(previous|prev|back|last)\b/.test(normalized)) {
+    return { name: "spotify", args: { action: "previous" } };
+  }
+
+  const shuffleState = spotifyOnOffState(normalized, "shuffle");
+  if (shuffleState !== null) {
+    return { name: "spotify", args: { action: "shuffle", state: shuffleState } };
+  }
+
+  const repeatState = spotifyRepeatState(normalized);
+  if (repeatState) {
+    return { name: "spotify", args: { action: "repeat", state: repeatState } };
+  }
+
+  const playArgs = spotifyPlayArgs(prompt);
+  return playArgs ? { name: "spotify", args: playArgs } : null;
+}
+
+function resolveContextualSpotifyTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (!normalized) {
+    return null;
+  }
+
+  if (/\bspotify\b/.test(normalized)) {
+    return resolveDirectSpotifyTool(prompt);
+  }
+
+  const volumePercent = contextualVolumePercent(normalized);
+  if (volumePercent !== null) {
+    return { name: "spotify", args: { action: "volume", percent: volumePercent } };
+  }
+
+  const command = normalized.replace(/^please\s+/, "").trim();
+  const mediaObject = "(?:it|this(?: song| track)?|the (?:song|track)|song|track|music|playback)";
+  if (new RegExp(`^(?:pause|stop)(?:\\s+${mediaObject})?$`).test(command)) {
+    return { name: "spotify", args: { action: "pause" } };
+  }
+  if (new RegExp(`^(?:resume|continue|unpause|play)(?:\\s+${mediaObject})?$`).test(command)) {
+    return { name: "spotify", args: { action: "resume" } };
+  }
+  if (
+    new RegExp(`^(?:skip|next)(?:\\s+${mediaObject})?$`).test(command) ||
+    /^(?:skip|next)\s+(?:song|track)$/.test(command)
+  ) {
+    return { name: "spotify", args: { action: "next" } };
+  }
+  if (/^(?:(?:go\s+)?back|previous|prev|last)(?:\s+(?:song|track))?$/.test(command)) {
+    return { name: "spotify", args: { action: "previous" } };
+  }
+  if (/^(?:what(?:'s| is)? playing|current (?:song|track|playback)|status)$/.test(command)) {
+    return { name: "spotify", args: { action: "status" } };
+  }
+
+  const shuffleState = contextualOnOffState(normalized, "shuffle");
+  if (shuffleState !== null) {
+    return { name: "spotify", args: { action: "shuffle", state: shuffleState } };
+  }
+
+  const repeatState = contextualRepeatState(normalized);
+  if (repeatState) {
+    return { name: "spotify", args: { action: "repeat", state: repeatState } };
+  }
+
+  const playArgs = spotifyPlayArgs(prompt);
+  if (playArgs) {
+    return { name: "spotify", args: playArgs };
+  }
+
+  return null;
+}
+
+function spotifyPlayArgs(prompt: string): LocalToolArgs | null {
+  const patterns = [
+    /^(?:please\s+)?play\s+(.+?)(?:\s+(?:on|in|with|using)\s+spotify|\s+spotify)?$/i,
+    /^(?:please\s+)?spotify\s+play\s+(.+)$/i
+  ];
+  const match = patterns.map((pattern) => prompt.match(pattern)).find(Boolean);
+  if (!match) {
+    return null;
+  }
+
+  const query = cleanSpotifyPlayQuery(match[1]);
+  if (!query) {
+    return { action: "resume" };
+  }
+
+  const kind = inferSpotifyKind(prompt);
+  const args: LocalToolArgs = { action: "play", query, kind };
+  if (kind === "playlist" && /\bmy\b/i.test(prompt)) {
+    args.prefer = "mine";
+  }
+  return args;
+}
+
+function cleanSpotifyPlayQuery(value: string): string {
+  return value
+    .replace(/\b(?:on|in|with|using)\s+spotify\b/gi, "")
+    .replace(/\bspotify\b/gi, "")
+    .replace(/^(?:the\s+)?(?:song|track|playlist|album|artist|podcast|show|episode)\s+/i, "")
+    .replace(/\s+(?:song|track|playlist|album|artist|podcast|show|episode)$/i, "")
+    .replace(/\s+(for me|please|thanks|thank you)$/i, "")
+    .trim();
+}
+
+function inferSpotifyKind(prompt: string): string {
+  const normalized = normalizeCommandText(prompt);
+  if (/\bplaylist\b/.test(normalized)) {
+    return "playlist";
+  }
+  if (/\balbum\b/.test(normalized)) {
+    return "album";
+  }
+  if (/\bartist\b/.test(normalized)) {
+    return "artist";
+  }
+  if (/\b(podcast|show)\b/.test(normalized)) {
+    return "show";
+  }
+  if (/\bepisode\b/.test(normalized)) {
+    return "episode";
+  }
+  return "track";
+}
+
+function spotifyVolumePercent(normalized: string): number | null {
+  if (!/\bspotify\b/.test(normalized) || !/\bvolume\b/.test(normalized)) {
+    return null;
+  }
+  return volumePercentFromCommand(normalized);
+}
+
+function contextualVolumePercent(normalized: string): number | null {
+  if (!/\bvolume\b/.test(normalized)) {
+    return null;
+  }
+  return volumePercentFromCommand(normalized);
+}
+
+function volumePercentFromCommand(normalized: string): number | null {
+  const percentMatch = normalized.match(/\b(\d{1,3})\s*(?:%|percent)\b/);
+  const setToMatch = normalized.match(/\b(?:to|at)\s+(\d{1,3})\b/);
+  const value = Number(percentMatch?.[1] ?? setToMatch?.[1] ?? Number.NaN);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function contextualOnOffState(normalized: string, word: string): string | null {
+  if (!normalized.includes(word)) {
+    return null;
+  }
+  if (new RegExp(`\\b${word}\\b.*\\b(off|disable|disabled)\\b|\\b(off|disable|disabled)\\b.*\\b${word}\\b`).test(normalized)) {
+    return "false";
+  }
+  if (new RegExp(`\\b${word}\\b.*\\b(on|enable|enabled)\\b|\\b(on|enable|enabled)\\b.*\\b${word}\\b`).test(normalized)) {
+    return "true";
+  }
+  return null;
+}
+
+function spotifyOnOffState(normalized: string, word: string): string | null {
+  if (!normalized.includes(word) || !/\bspotify\b/.test(normalized)) {
+    return null;
+  }
+  const commandOnly = normalized.replace(/\bon spotify\b|\bspotify\b/g, " ").replace(/\s+/g, " ").trim();
+  if (new RegExp(`\\b${word}\\b.*\\b(off|disable|disabled)\\b|\\b(off|disable|disabled)\\b.*\\b${word}\\b`).test(commandOnly)) {
+    return "false";
+  }
+  if (new RegExp(`\\b${word}\\b.*\\b(on|enable|enabled)\\b|\\b(on|enable|enabled)\\b.*\\b${word}\\b`).test(commandOnly)) {
+    return "true";
+  }
+  return null;
+}
+
+function contextualRepeatState(normalized: string): string | null {
+  if (!/\brepeat\b/.test(normalized)) {
+    return null;
+  }
+  if (/\boff\b/.test(normalized)) {
+    return "off";
+  }
+  if (/\b(track|song|one)\b/.test(normalized)) {
+    return "track";
+  }
+  if (/\b(context|playlist|album|on)\b/.test(normalized)) {
+    return "context";
+  }
+  return null;
+}
+
+function spotifyRepeatState(normalized: string): string | null {
+  if (!/\brepeat\b/.test(normalized) || !/\bspotify\b/.test(normalized)) {
+    return null;
+  }
+  if (/\boff\b/.test(normalized)) {
+    return "off";
+  }
+  if (/\b(track|song|one)\b/.test(normalized)) {
+    return "track";
+  }
+  if (/\b(context|playlist|album|on)\b/.test(normalized)) {
+    return "context";
+  }
+  return null;
+}
+
+function normalizeCommandText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\w\s'%]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isKnownAppTarget(normalized: string, target: string): boolean {
   if (APP_ALIASES[normalized]) {
     return true;
@@ -934,7 +1275,7 @@ function isKnownAppTarget(normalized: string, target: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(target.trim()) && !/^https?:/i.test(target.trim());
 }
 
-/** Short app names like "discord" or "visual studio" that are safe to open by name. */
+/** Short app names like "discord" or "visual studio" — skip the LLM and open directly. */
 function isDirectAppLaunchTarget(normalized: string, target: string): boolean {
   if (isKnownAppTarget(normalized, target)) {
     return true;
@@ -1075,7 +1416,7 @@ async function inspectScreen(args: LocalToolArgs, services: LocalToolServices): 
   return {
     name: "screen",
     path: screenshot.path,
-    text: analysis
+    text: `Screen capture: ${screenshot.path} (${screenshot.width}x${screenshot.height}). ${analysis}`
   };
 }
 

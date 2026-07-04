@@ -432,17 +432,13 @@ export function App() {
   return (
     <main className="app-shell" style={{ "--side-width": `${sideWidth}px` } as React.CSSProperties}>
       <section className="stage">
-        <TopBar
+        <AiChamber
           state={state}
           statusText={statusText}
           configSummary={configSummary}
           online={online}
           modelStats={modelStats}
           showPerf={Boolean(config?.gui?.showPerformanceStats)}
-        />
-
-        <OrbStage
-          state={state}
           audioLevel={audioLevel}
           toolFlashActive={toolFlashActive}
           showStats={showStats}
@@ -514,46 +510,13 @@ export function App() {
   );
 }
 
-function TopBar({
+function AiChamber({
   state,
   statusText,
   configSummary,
   online,
   modelStats,
-  showPerf
-}: {
-  state: AssistantState;
-  statusText: string;
-  configSummary: string;
-  online: boolean;
-  modelStats: ModelStats | null;
-  showPerf: boolean;
-}) {
-  const perfHint =
-    showPerf && modelStats && modelStats.tokensPerSecond > 0
-      ? ` · ${modelStats.tokensPerSecond} tok/s`
-      : "";
-
-  return (
-    <header className="topbar">
-      <div className="title-block">
-        <p className="eyebrow">
-          <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
-          Pythos
-        </p>
-        <h1>{statusText}</h1>
-        <p className="topbar-meta">
-          {configSummary}
-          {!online && " · Offline"}
-          {perfHint}
-        </p>
-      </div>
-    </header>
-  );
-}
-
-function OrbStage({
-  state,
+  showPerf,
   audioLevel,
   toolFlashActive,
   showStats,
@@ -564,6 +527,11 @@ function OrbStage({
   onToggle
 }: {
   state: AssistantState;
+  statusText: string;
+  configSummary: string;
+  online: boolean;
+  modelStats: ModelStats | null;
+  showPerf: boolean;
   audioLevel: number;
   toolFlashActive: boolean;
   showStats: boolean;
@@ -573,39 +541,82 @@ function OrbStage({
   onInspect: (node: ConnectedNode) => void;
   onToggle: () => void;
 }) {
+  const perfHint =
+    showPerf && modelStats && modelStats.tokensPerSecond > 0
+      ? ` · ${modelStats.tokensPerSecond} tok/s`
+      : "";
+
+  const stateLabel = useMemo(() => {
+    if (state === "idle") return "Standby";
+    if (state === "loading") return "Initializing";
+    if (state === "wakeword") return "Wake word";
+    if (state === "listening") return "Listening";
+    if (state === "thinking") return "Processing";
+    if (state === "speaking") return "Responding";
+    if (state === "error") return "Attention";
+    return "Offline";
+  }, [state]);
+
   return (
-    <div
-      className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
-      style={{ "--level": audioLevel } as React.CSSProperties}
-      onClick={onToggle}
-      role="button"
-      tabIndex={0}
-      aria-label={state === "listening" ? "Stop listening" : "Start push to talk"}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onToggle();
-        }
-      }}
-    >
-      {showStats && (
-        <div className="performance-stats">
-          {uptime} up · {conversationLength} msgs · {connectedNodes.length} nodes
+    <section className="ai-chamber" aria-label="AI core">
+      <header className="ai-chamber-header">
+        <div className="brand-mark">
+          <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
+          <span>Pythos</span>
         </div>
-      )}
-      <div className="orb-glow" />
-      <div className="node-orbits" aria-label="Connected nodes">
-        {connectedNodes.map((node, index) => (
-          <NodeOrbit node={node} index={index} count={connectedNodes.length} key={node.id} onInspect={() => onInspect(node)} />
-        ))}
+        {showStats && (
+          <div className="performance-stats">
+            {uptime} · {conversationLength} msgs · {connectedNodes.length} nodes
+          </div>
+        )}
+      </header>
+
+      <div className="ai-core">
+        <div className="neural-field" aria-hidden="true">
+          <div className="neural-ring ring-1" />
+          <div className="neural-ring ring-2" />
+          <div className="neural-ring ring-3" />
+        </div>
+
+        <div
+          className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
+          style={{ "--level": audioLevel } as React.CSSProperties}
+          onClick={onToggle}
+          role="button"
+          tabIndex={0}
+          aria-label={state === "listening" ? "Stop listening" : "Start push to talk"}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onToggle();
+            }
+          }}
+        >
+          <div className="orb-glow" />
+          <div className="neural-nodes" aria-label="Connected nodes">
+            {connectedNodes.map((node, index) => (
+              <NodeOrbit node={node} index={index} count={connectedNodes.length} key={node.id} onInspect={() => onInspect(node)} />
+            ))}
+          </div>
+          <div className="orb">
+            <div className="orb-core" />
+            <div className="pulse-ring one" />
+            <div className="pulse-ring two" />
+          </div>
+          <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
+        </div>
       </div>
-      <div className="orb">
-        <div className="orb-core" />
-        <div className="pulse-ring one" />
-        <div className="pulse-ring two" />
+
+      <div className="ai-status">
+        <p className="ai-state-label">{stateLabel}</p>
+        <h1 className="ai-status-text">{statusText}</h1>
+        <p className="ai-status-meta">
+          {configSummary}
+          {!online && " · Offline"}
+          {perfHint}
+        </p>
       </div>
-      <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
-    </div>
+    </section>
   );
 }
 

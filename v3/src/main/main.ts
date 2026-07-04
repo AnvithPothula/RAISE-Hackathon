@@ -16,8 +16,11 @@ import { ensureOllamaReady } from "./ollamaRuntime.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
+import { routeUserIntent } from "./intentRouter.js";
 import {
   extractUserLocation,
+  resolveContextualLocalTool,
+  resolveDirectLocalTool,
   runNamedLocalTool,
   type LocalToolArgs,
   type LocalToolName,
@@ -372,6 +375,20 @@ async function handleUserPrompt(prompt: string): Promise<void> {
     return;
   }
 
+  const directToolText = await runDirectLocalTool(prompt, { turnId, source: "typed" });
+  if (directToolText !== null) {
+    if (turnId !== activeTurnId) {
+      debug(`direct tool response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale direct tool response ignored", { turnId, activeTurnId, source: "typed" });
+      return;
+    }
+    activePrompt = null;
+    rememberTurn("assistant", directToolText);
+    broadcastAssistantText(directToolText, "local-tool");
+    pythonWorker.send({ type: "speak", text: directToolText });
+    return;
+  }
+
   await respondDirect(prompt, turnId);
 }
 
@@ -410,13 +427,35 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     return { text: await retryLastTool(turnId, "echo"), toolUsed: true };
   }
 
+  const directToolText = await runDirectLocalTool(prompt, { turnId, source: "echo" });
+  if (directToolText !== null) {
+    if (turnId !== activeTurnId) {
+      debug(`echo direct tool response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale direct tool response ignored", { turnId, activeTurnId, source: "echo" });
+      return "I already moved on to another request.";
+    }
+    activePrompt = null;
+    rememberTurn("assistant", directToolText);
+    broadcastAssistantText(directToolText, "echo");
+    broadcast("assistant:state", "speaking");
+    setTimeout(() => {
+      if (activeTurnId === turnId) {
+        broadcast("assistant:state", "idle");
+      }
+    }, 5000);
+    return { text: directToolText, toolUsed: true };
+  }
+
   try {
     debug(`echo gemma response starting device=${context.deviceId} promptChars=${prompt.length}`);
+    const routing = routeUserIntent(prompt, { knownLocation });
     emitDebugEvent("gemma request", {
       turnId,
       source: "echo",
       model: resolveActiveModel(config),
-      promptChars: prompt.length
+      promptChars: prompt.length,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope
     });
     const text = sanitizeAssistantText(
       await generateWithOllama(prompt, config, {
@@ -425,6 +464,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
+        toolScope: routing.llmToolScope,
         onToolEvent: (phase, result) => {
           if (phase === "start") {
             toolUsed = true;
@@ -463,6 +503,76 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
 
 function isStaleTurn(turnId: number): boolean {
   return turnId !== activeTurnId;
+}
+
+async function runDirectLocalTool(prompt: string, context: { turnId: number; source: PromptSource }): Promise<string | null> {
+  const routing = routeUserIntent(prompt, {
+    previousToolName: lastRetryableTool?.name ?? null,
+    knownLocation
+  });
+  const directInvocation = resolveDirectLocalTool(prompt, {
+    previousToolName: lastRetryableTool?.name ?? null,
+    knownLocation
+  });
+  const contextualInvocation =
+    directInvocation ?? resolveContextualLocalTool(prompt, lastRetryableTool?.name ?? null, knownLocation);
+  const invocation = directInvocation ?? contextualInvocation;
+  const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
+  if (!invocation) {
+    emitDebugEvent("route gemma", {
+      turnId: context.turnId,
+      source: context.source,
+      previousTool: lastRetryableTool?.name,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope,
+      reason: routing.reason
+    });
+    return null;
+  }
+
+  debug(`direct local tool match name=${invocation.name} args=${JSON.stringify(invocation.args)}`);
+  emitDebugEvent("route direct tool", {
+    turnId: context.turnId,
+    source: context.source,
+    route,
+    previousTool: lastRetryableTool?.name,
+    tool: invocation.name,
+    args: invocation.args
+  });
+  const startedAt = Date.now();
+  broadcastLocalToolEvent("start", {
+    name: invocation.name,
+    text: "Tool started",
+    args: invocation.args,
+    route,
+    source: context.source,
+    turnId: context.turnId
+  });
+  try {
+    const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
+    broadcastLocalToolEvent("end", {
+      ...result,
+      args: invocation.args,
+      route,
+      source: context.source,
+      turnId: context.turnId,
+      durationMs: Date.now() - startedAt
+    });
+    return result.text;
+  } catch (error) {
+    const message = `Tool failed: ${String(error)}`;
+    debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
+    broadcastLocalToolEvent("error", {
+      name: invocation.name,
+      error: message,
+      args: invocation.args,
+      route,
+      source: context.source,
+      turnId: context.turnId,
+      durationMs: Date.now() - startedAt
+    });
+    return message;
+  }
 }
 
 function staleTurnMessage(): string {
@@ -555,11 +665,14 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
   clearPendingPiFallbacks();
   try {
     debug(`gemma response starting promptChars=${prompt.length}`);
+    const routing = routeUserIntent(prompt, { knownLocation });
     emitDebugEvent("gemma request", {
       turnId,
       source: "typed",
       model: resolveActiveModel(config),
-      promptChars: prompt.length
+      promptChars: prompt.length,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope
     });
     broadcast("assistant:state", "thinking");
     const text = sanitizeAssistantText(
@@ -569,6 +682,7 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
+        toolScope: routing.llmToolScope,
         onToolEvent: (phase, result) =>
           broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "typed", turnId }),
         onModelStats: broadcastModelStats

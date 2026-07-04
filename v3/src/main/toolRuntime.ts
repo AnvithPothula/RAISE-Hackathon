@@ -12,6 +12,7 @@ import {
   type LocalToolServices
 } from "./localTools.js";
 import { buildDynamicSkillPrompt } from "./skillRegistry.js";
+import type { LlmToolScope } from "./intentRouter.js";
 import type { McpManager } from "./mcpManager.js";
 
 // Transport-agnostic tool runtime shared by the local Gemma (Ollama) client.
@@ -30,6 +31,8 @@ export type ToolContext = {
   prompt?: string;
   localToolServices?: LocalToolServices;
   mcp?: McpManager;
+  /** Trim tool declarations exposed to the local model for simple prompts. */
+  toolScope?: LlmToolScope;
   onToolEvent?: (phase: "start" | "end" | "error", result: ToolEventResult) => void;
   /** Called after every local model inference with tok/s, TTFT, and thinking info. */
   onModelStats?: (stats: ModelStats) => void;
@@ -55,8 +58,14 @@ type ToolCallOutcome = {
 };
 
 /** Compose the full system prompt: base prompt + dynamic skills + MCP tool list. */
-export function readSystemPrompt(mcp?: McpManager): string {
-  return [fs.readFileSync(systemPromptPath, "utf-8").trim(), buildDynamicSkillPrompt(), buildMcpPrompt(mcp)]
+export function readSystemPrompt(mcp?: McpManager, toolScope: LlmToolScope = "full"): string {
+  const includeMcp = toolScope !== "minimal";
+  const includeSkills = toolScope === "full";
+  return [
+    fs.readFileSync(systemPromptPath, "utf-8").trim(),
+    includeSkills ? buildDynamicSkillPrompt() : "",
+    includeMcp ? buildMcpPrompt(mcp) : ""
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -318,12 +327,43 @@ const CURSOR_AGENT_DECLARATION = {
  * only included when the `cursor-agent` CLI is actually installed, so the model
  * is never offered a tool that cannot work.
  */
-export function buildFunctionDeclarations(): Array<Record<string, unknown>> {
-  const declarations: Array<Record<string, unknown>> = [...FUNCTION_DECLARATIONS];
-  if (isCursorAgentAvailable()) {
+export function buildFunctionDeclarations(toolScope: LlmToolScope = "full"): Array<Record<string, unknown>> {
+  const declarations: Array<Record<string, unknown>> = FUNCTION_DECLARATIONS.filter((declaration) =>
+    isDeclarationAllowed(String(declaration.name), toolScope)
+  );
+  if (toolScope !== "minimal" && isCursorAgentAvailable()) {
     declarations.push(CURSOR_AGENT_DECLARATION);
   }
   return declarations;
+}
+
+function isDeclarationAllowed(name: string, toolScope: LlmToolScope): boolean {
+  if (toolScope === "full") {
+    return true;
+  }
+  const minimal = new Set([
+    "get_weather",
+    "get_time",
+    "calculate",
+    "set_manage_alarm",
+    "open_app",
+    "open_website",
+    "web_search",
+    "control_spotify",
+    "update_user_memory"
+  ]);
+  const heavy = new Set([
+    "run_sub_agent",
+    "deep_research",
+    "inspect_screen",
+    "run_code",
+    "run_skill_script",
+    "delegate_coding_task"
+  ]);
+  if (toolScope === "minimal") {
+    return minimal.has(name);
+  }
+  return !heavy.has(name);
 }
 
 /**
