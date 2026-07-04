@@ -139,7 +139,7 @@ type GeocodeResult = {
 
 const alarms = new Map<string, AlarmItem & { timeout: TimerHandle }>();
 
-const APP_ALIASES: Record<string, string> = {
+const WINDOWS_APP_ALIASES: Record<string, string> = {
   calculator: "calc.exe",
   calc: "calc.exe",
   settings: "ms-settings:",
@@ -167,6 +167,71 @@ const APP_ALIASES: Record<string, string> = {
   terminal: "wt.exe",
   spotify: "spotify.exe"
 };
+
+const MAC_APP_ALIASES: Record<string, string> = {
+  calculator: "Calculator",
+  calc: "Calculator",
+  settings: "System Settings",
+  "system settings": "System Settings",
+  "system preferences": "System Settings",
+  notepad: "TextEdit",
+  textedit: "TextEdit",
+  notes: "Notes",
+  paint: "Preview",
+  preview: "Preview",
+  explorer: "Finder",
+  "file explorer": "Finder",
+  finder: "Finder",
+  files: "Finder",
+  chrome: "Google Chrome",
+  "google chrome": "Google Chrome",
+  safari: "Safari",
+  edge: "Microsoft Edge",
+  "microsoft edge": "Microsoft Edge",
+  word: "Microsoft Word",
+  "microsoft word": "Microsoft Word",
+  excel: "Microsoft Excel",
+  "microsoft excel": "Microsoft Excel",
+  powerpoint: "Microsoft PowerPoint",
+  "microsoft powerpoint": "Microsoft PowerPoint",
+  browser: "Safari",
+  "default browser": "Safari",
+  terminal: "Terminal",
+  spotify: "Spotify",
+  music: "Music",
+  mail: "Mail",
+  calendar: "Calendar",
+  messages: "Messages",
+  photos: "Photos",
+  "app store": "App Store",
+  "activity monitor": "Activity Monitor"
+};
+
+const LINUX_APP_ALIASES: Record<string, string> = {
+  calculator: "gnome-calculator",
+  calc: "gnome-calculator",
+  settings: "gnome-control-center",
+  "system settings": "gnome-control-center",
+  notepad: "gedit",
+  notes: "gedit",
+  editor: "gedit",
+  files: "nautilus",
+  "file explorer": "nautilus",
+  explorer: "nautilus",
+  chrome: "google-chrome",
+  "google chrome": "google-chrome",
+  firefox: "firefox",
+  browser: "xdg-open:https://",
+  terminal: "gnome-terminal",
+  spotify: "spotify"
+};
+
+const APP_ALIASES: Record<string, string> =
+  process.platform === "darwin"
+    ? MAC_APP_ALIASES
+    : process.platform === "win32"
+      ? WINDOWS_APP_ALIASES
+      : LINUX_APP_ALIASES;
 
 const WEBSITE_ALIASES: Record<string, string> = {
   google: "google.com",

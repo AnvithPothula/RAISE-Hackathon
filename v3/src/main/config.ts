@@ -73,9 +73,12 @@ export function writeConfig(config: AppConfig): RawConfig {
 }
 
 export function resolveWorkerPython(): string {
-  const venvPython = path.join(appRoot, ".venv", "Scripts", "python.exe");
+  const venvPython =
+    process.platform === "win32"
+      ? path.join(appRoot, ".venv", "Scripts", "python.exe")
+      : path.join(appRoot, ".venv", "bin", "python");
   if (fs.existsSync(venvPython)) {
     return venvPython;
   }
-  return "python";
+  return process.platform === "win32" ? "python" : "python3";
 }

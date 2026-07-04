@@ -57,7 +57,8 @@ describe("runNamedLocalTool", () => {
       }
     });
 
-    expect(opened).toEqual(["calc.exe"]);
+    const expected = process.platform === "darwin" ? "Calculator" : process.platform === "win32" ? "calc.exe" : "gnome-calculator";
+    expect(opened).toEqual([expected]);
   });
 
   it("uses app aliases for Excel and Notes", async () => {
@@ -74,7 +75,13 @@ describe("runNamedLocalTool", () => {
       }
     });
 
-    expect(opened).toEqual(["excel.exe", "notepad.exe"]);
+    const expected =
+      process.platform === "darwin"
+        ? ["Microsoft Excel", "Notes"]
+        : process.platform === "win32"
+          ? ["excel.exe", "notepad.exe"]
+          : ["excel", "gedit"];
+    expect(opened).toEqual(expected);
   });
 
   it("uses injected web search service", async () => {

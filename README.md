@@ -12,6 +12,8 @@ Pythos v3 is a dev-first rebuild of v2 with a Python audio worker, Electron/Reac
 
 ## Setup
 
+### Windows
+
 ```powershell
 cd C:\Helper-Base\v3
 .\scripts\setup-venv.ps1
@@ -25,11 +27,47 @@ Install Pi separately if `pi` is not already on PATH:
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 ```
 
+### macOS / Linux
+
+PyAudio needs the native PortAudio library. Install it first:
+
+```bash
+# macOS
+brew install portaudio
+# Debian / Ubuntu
+sudo apt-get install -y portaudio19-dev
+```
+
+Then set up the project:
+
+```bash
+cd v3
+chmod +x scripts/*.sh          # first time only
+./scripts/setup-venv.sh
+npm install
+./scripts/install-pi-models.sh
+```
+
+Install Pi separately if `pi` is not already on PATH:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
 ## Run
+
+Windows:
 
 ```powershell
 cd C:\Helper-Base\v3
 npm run dev
+```
+
+macOS / Linux:
+
+```bash
+cd v3
+npm run dev   # or ./scripts/dev.sh
 ```
 
 ## Android Remote over Tailscale
@@ -56,9 +94,18 @@ Alexa/Echo clients can include `deviceId`, `sessionId`, and `deviceName` as quer
 
 ## Test
 
+Windows:
+
 ```powershell
 cd C:\Helper-Base\v3
 .\scripts\test.ps1
+```
+
+macOS / Linux:
+
+```bash
+cd v3
+./scripts/test.sh
 ```
 
 ## Worker Protocol
@@ -85,7 +132,7 @@ Events are JSONL objects emitted to stdout:
 
 - `config.json` defaults to low-resource hotkey-style operation.
 - The default ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk` for better recognition tolerance. It loads slower than the small model.
-- `scripts/install-vosk-model.ps1` can reinstall the full Vosk model if it is missing. The smaller `vosk-model-small-en-us-0.15` model remains available as a faster fallback.
+- `scripts/install-vosk-model.ps1` (Windows) or `scripts/install-vosk-model.sh` (macOS/Linux) can reinstall the full Vosk model if it is missing. The smaller `vosk-model-small-en-us-0.15` model remains available as a faster fallback.
 - The Google AI Studio (Gemini) API is the LLM backend; set `GEMINI_API_KEY` in `v3/.env`.
 - The Pi bridge starts `pi --mode rpc --no-session --model gemini/gemini-2.5-flash`.
-- Pi custom models are included at `.pi/models.json`; `scripts/install-pi-models.ps1` copies that file to `~/.pi/agent/models.json`.
+- Pi custom models are included at `.pi/models.json`; `scripts/install-pi-models.ps1` (Windows) or `scripts/install-pi-models.sh` (macOS/Linux) copies that file to `~/.pi/agent/models.json`.

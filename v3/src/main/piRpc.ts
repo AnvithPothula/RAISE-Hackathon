@@ -175,52 +175,58 @@ function resolvePiLaunch(config: PiConfig): { command: string; args: string[] } 
   }
 
   const explicit = process.env.PYTHOS_PI_COMMAND;
-  if (explicit && fs.existsSync(explicit)) {
+  if (explicit && (path.isAbsolute(explicit) ? fs.existsSync(explicit) : true)) {
     return launchForPath(explicit, config.args);
   }
 
-  const commandCandidates = [
-    path.join(os.homedir(), ".npm-global", "pi.ps1"),
-    path.join(os.homedir(), ".npm-global", "pi.cmd")
-  ];
+  const isWindows = process.platform === "win32";
+  const commandCandidates = isWindows
+    ? [
+        path.join(os.homedir(), ".npm-global", "pi.ps1"),
+        path.join(os.homedir(), ".npm-global", "pi.cmd")
+      ]
+    : npmGlobalBinDirs().map((dir) => path.join(dir, "pi"));
   for (const commandPath of commandCandidates) {
     if (fs.existsSync(commandPath)) {
       return launchForPath(commandPath, config.args);
     }
   }
 
-  const cliCandidates = [
-    path.join(
-      os.homedir(),
-      ".npm-global",
-      "node_modules",
-      "@mariozechner",
-      "pi-coding-agent",
-      "dist",
-      "cli.js"
-    ),
-    path.join(
-      os.homedir(),
-      ".npm-global",
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
-      "dist",
-      "cli.js"
-    )
-  ];
-
-  for (const cliPath of cliCandidates) {
-    if (fs.existsSync(cliPath)) {
-      return { command: "node.exe", args: [cliPath, ...config.args] };
+  const nodeCommand = isWindows ? "node.exe" : "node";
+  const packages = ["@mariozechner/pi-coding-agent", "@earendil-works/pi-coding-agent"];
+  for (const modulesRoot of npmGlobalModuleDirs()) {
+    for (const pkg of packages) {
+      const cliPath = path.join(modulesRoot, ...pkg.split("/"), "dist", "cli.js");
+      if (fs.existsSync(cliPath)) {
+        return { command: nodeCommand, args: [cliPath, ...config.args] };
+      }
     }
   }
 
-  if (config.command !== "pi") {
-    return { command: config.command, args: config.args };
-  }
+  // Fall back to resolving the command on PATH (e.g. a `pi` binary installed globally).
+  return { command: config.command, args: config.args };
+}
 
-  return null;
+function npmGlobalBinDirs(): string[] {
+  const home = os.homedir();
+  return [
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".nvm", "current", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/bin"
+  ];
+}
+
+function npmGlobalModuleDirs(): string[] {
+  const home = os.homedir();
+  return [
+    path.join(home, ".npm-global", "node_modules"),
+    path.join(home, ".npm-global", "lib", "node_modules"),
+    "/usr/local/lib/node_modules",
+    "/opt/homebrew/lib/node_modules",
+    "/usr/lib/node_modules"
+  ];
 }
 
 function launchForPath(commandPath: string, args: string[]): { command: string; args: string[] } {

@@ -22,7 +22,7 @@
   },
   "gemini": {
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
-    "model": "gemini-2.5-flash",
+    "model": "gemma-4-26b-a4b-it",
     "think": "low"
   },
   "gradium": {
@@ -33,7 +33,8 @@
     "sttModel": "default",
     "sttInputFormat": "pcm_16000",
     "vadHorizonIndex": 2,
-    "vadInactivityThreshold": 0.5
+    "vadInactivityThreshold": 0.85,
+    "vadMinSilenceSeconds": 1.2
   },
   "pi": {
     "command": "pi",
@@ -42,7 +43,7 @@
       "rpc",
       "--no-session",
       "--model",
-      "gemini/gemini-2.5-flash",
+      "gemini/gemma-4-26b-a4b-it",
       "--extension",
       ".pi/extensions/pythos-safe-tools.ts",
       "--skill",
