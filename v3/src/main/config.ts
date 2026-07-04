@@ -119,12 +119,37 @@ function readUserOverrides(): Record<string, unknown> {
 }
 
 export function readConfig(): RawConfig {
-  const config = deepMerge(readDefaults(), readUserOverrides());
+  const config = patchMcpConfig(deepMerge(readDefaults(), readUserOverrides()));
 
   if (process.env.PYTHOS_PI_COMMAND) {
     config.pi.command = process.env.PYTHOS_PI_COMMAND;
   }
 
+  return config;
+}
+
+function patchMcpConfig(config: RawConfig): RawConfig {
+  if (!config.mcp?.servers?.length) {
+    return config;
+  }
+  const home = os.homedir();
+  config.mcp.servers = config.mcp.servers.map((server) => {
+    if (server.name !== "filesystem") {
+      return server;
+    }
+    const args = (server.args ?? []).map((arg) => {
+      if (arg === "{{PYTHOS_HOME}}" || arg === "{{HOME}}") {
+        return home;
+      }
+      return arg;
+    });
+    const platformArgs =
+      process.platform === "win32" ? args : args.filter((arg) => !/^[A-Za-z]:[\\/]/.test(arg));
+    if (!platformArgs.includes(home)) {
+      platformArgs.push(home);
+    }
+    return { ...server, args: platformArgs };
+  });
   return config;
 }
 

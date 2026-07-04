@@ -1,8 +1,9 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, Notification, screen, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Notification, screen, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openLocalApp } from "./appLauncher.js";
+import { captureDisplayScreenshot } from "./screenCapture.js";
 import {
   extractAssistantText,
   extractLastAssistantText,
@@ -17,6 +18,7 @@ import { useOpenRouter } from "./openRouterClient.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
+import { createFilesystemAccess } from "./filesystemAccess.js";
 import { routeUserIntent } from "./intentRouter.js";
 import {
   extractUserLocation,
@@ -41,6 +43,7 @@ let config = readConfig();
 const pythonWorker = new PythonWorkerBridge();
 const pi = new PiRpcBridge(config.pi);
 const mcp = new McpManager(config.mcp);
+const filesystemAccess = createFilesystemAccess(mcp);
 const echoBridge = new EchoBridge({
   onPrompt: handleEchoPrompt,
   onEvent: handleEchoBridgeEvent
@@ -86,7 +89,13 @@ const localToolServices: LocalToolServices = {
   captureScreen,
   analyzeScreen: (imagePath, prompt) => analyzeImageWithOllama(imagePath, prompt, config),
   openApp: openLocalApp,
+  openFolder: (folderPath) => shell.openPath(folderPath).then((error) => {
+    if (error) {
+      throw new Error(error);
+    }
+  }),
   openWebsite: (url) => shell.openExternal(url),
+  filesystemAccess,
   onAlarm: (alarm) => {
     const text = `Alarm: ${alarm.label}`;
     debug(`alarm fired id=${alarm.id} label="${alarm.label}"`);
@@ -981,36 +990,7 @@ function broadcastAssistantText(text: string, source: string): void {
 }
 
 async function captureScreen(): Promise<{ path: string; width: number; height: number }> {
-  const targetDisplay =
-    mainWindow && !mainWindow.isDestroyed()
-      ? screen.getDisplayMatching(mainWindow.getBounds())
-      : screen.getPrimaryDisplay();
-  const scale = targetDisplay.scaleFactor;
-  const thumbnailSize = {
-    width: Math.min(2560, Math.max(640, Math.round(targetDisplay.size.width * scale))),
-    height: Math.min(1440, Math.max(480, Math.round(targetDisplay.size.height * scale)))
-  };
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"],
-    thumbnailSize,
-    fetchWindowIcons: false
-  });
-  const displayId = String(targetDisplay.id);
-  const source =
-    sources.find((entry) => String(entry.display_id) === displayId && !entry.thumbnail.isEmpty()) ??
-    sources.find((entry) => !entry.thumbnail.isEmpty());
-  if (!source) {
-    const permissionHint =
-      process.platform === "darwin"
-        ? " Grant Screen Recording permission in System Settings > Privacy & Security."
-        : "";
-    throw new Error(`No screen source was available to capture.${permissionHint}`);
-  }
-  const image = source.thumbnail;
-  const size = image.getSize();
-  const filePath = path.join(app.getPath("temp"), `pythos-screen-${Date.now()}.png`);
-  fs.writeFileSync(filePath, image.toPNG());
-  return { path: filePath, width: size.width, height: size.height };
+  return captureDisplayScreenshot(mainWindow);
 }
 
 function clearPendingPiFallbacks(): void {
@@ -1024,6 +1004,9 @@ function formatDirectToolFailure(name: LocalToolName, error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
   if (name === "open_app") {
     return detail || "I couldn't open that app.";
+  }
+  if (name === "screen") {
+    return detail || "I couldn't capture your screen.";
   }
   return `Tool failed: ${detail}`;
 }

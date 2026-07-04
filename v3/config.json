@@ -75,15 +75,14 @@
       },
       {
         "name": "filesystem",
-        "enabled": false,
-        "_comment": "Redundant with the local 'system' server (home-sandboxed file tools). Rooted at the repo, so voice queries about ~/Downloads fail. Enable and point at an absolute home path if you want the official npx filesystem server; adds 14 tools and slows first-token latency on the 12B model.",
+        "enabled": true,
+        "_comment": "Roots at the user's home directory so voice requests like 'open Downloads' resolve through MCP get_file_info/list_directory before opening Finder.",
         "transport": "stdio",
         "command": "npx",
         "args": [
           "-y",
           "@modelcontextprotocol/server-filesystem",
-          "E:\\",
-          "C:\\Users\\Scuyul"
+          "{{PYTHOS_HOME}}"
         ]
       },
       {

@@ -91,6 +91,28 @@ export class McpManager extends EventEmitter {
     return Boolean(name && this.toolIndex.has(name));
   }
 
+  isServerConnected(serverName: string): boolean {
+    const runtime = this.runtimes.get(serverName);
+    return Boolean(runtime?.connected);
+  }
+
+  resolveServerToolName(serverName: string, toolName: string): string | null {
+    const candidate = buildMcpToolName(serverName, toolName);
+    return this.toolIndex.has(candidate) ? candidate : null;
+  }
+
+  async callServerTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown> = {}
+  ): Promise<McpToolResult> {
+    const geminiName = this.resolveServerToolName(serverName, toolName);
+    if (!geminiName) {
+      throw new Error(`MCP tool "${toolName}" is not available on server "${serverName}".`);
+    }
+    return this.callTool(geminiName, args);
+  }
+
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult> {
     const descriptor = this.toolIndex.get(name);
     if (!descriptor) {

@@ -1,4 +1,5 @@
 import type { LocalToolInvocation, LocalToolName } from "./localTools.js";
+import { looksLikeFolderOpenRequest, looksLikeFolderPath, parseFolderTarget } from "./filesystemAccess.js";
 import { extractMathExpression, looksLikeMathQuestion } from "./mathExpression.js";
 import { extractLocationFromPrompt } from "./locationUtils.js";
 import { cleanAppTarget, stripConversationalPrefix } from "./voiceTranscript.js";
@@ -98,6 +99,7 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
     resolveCapabilitiesIntent(cleanPrompt) ??
     resolveClipboardIntent(cleanPrompt, normalized) ??
     resolveScreenIntent(cleanPrompt, normalized) ??
+    resolveOpenFolderIntent(cleanPrompt, normalized) ??
     resolveDirectoryIntent(cleanPrompt, normalized) ??
     resolveCalculatorIntent(cleanPrompt, normalized) ??
     resolveAlarmIntent(cleanPrompt, normalized) ??
@@ -284,6 +286,34 @@ function resolveDirectoryIntent(cleanPrompt: string, normalized: string): LocalT
   return null;
 }
 
+
+function resolveOpenFolderIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+  const simpleHomeFolder = cleanPrompt.match(
+    /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:just\s+want\s+(?:you\s+to\s+)?)?(?:open|show|go to|view|reveal)\s+(?:the\s+|my\s+)?(documents|downloads|desktop|pictures|photos|music|movies)(?:\s+(?:folder|directory|further))?$/i
+  );
+  if (simpleHomeFolder?.[1]) {
+    return { name: "list_folder", args: { path: simpleHomeFolder[1], action: "open" } };
+  }
+
+  const patterns = [
+    /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:open|show|go to|view|reveal)\s+(?:my\s+)?(.+?)(?:\s+(?:folder|directory|further))?$/i,
+    /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:open|show)\s+(?:the\s+)?(.+?)\s+(?:folder|directory|further)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = cleanPrompt.match(pattern);
+    const raw = match?.[1]?.trim();
+    if (!raw) {
+      continue;
+    }
+    if (!looksLikeFolderOpenRequest(cleanPrompt, raw)) {
+      continue;
+    }
+    const [pathArg] = parseFolderTarget(raw);
+    return { name: "list_folder", args: { path: pathArg ?? raw, action: "open" } };
+  }
+  return null;
+}
+
 function resolveSpotifyPlayIntent(cleanPrompt: string): LocalToolInvocation | null {
   const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
   if (!playMatch) {
@@ -439,6 +469,9 @@ function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
   if (isWebsiteTarget(normalized, target)) {
     return { name: "open_website", args: { url: target } };
   }
+  if (looksLikeFolderOpenRequest(cleanPrompt, rawTarget)) {
+    return null;
+  }
   if (isDirectAppLaunchTarget(normalized, target)) {
     return { name: "open_app", args: { app: target } };
   }
@@ -509,7 +542,13 @@ export function needsMultiToolLoop(cleanPrompt: string, normalized: string): boo
   if (/\b(alarm|wake me|remind me)\b/.test(normalized)) {
     categories.add("alarm");
   }
-  if (/\b(screen|clipboard|folder|directory)\b/.test(normalized)) {
+  if (/\b(screen|clipboard)\b/.test(normalized)) {
+    categories.add("device");
+  }
+  if (
+    /\b(folder|directory)\b/.test(normalized) &&
+    !/\b(open|launch|start|show|go to|view|list|what(?:'s| is)\s+in)\b/.test(normalized)
+  ) {
     categories.add("device");
   }
 
@@ -711,6 +750,8 @@ function isDirectAppLaunchTarget(normalized: string, target: string): boolean {
     "files",
     "folder",
     "document",
+    "drive",
+    "further",
     "window",
     "tab",
     "page",

@@ -18,6 +18,14 @@ const OPEN_APP_PHRASE_FIXES: Array<[RegExp, string]> = [
   [/\bgoogle\s+crome\b/gi, "google chrome"]
 ];
 
+/** Folder open mishearings from voice input. */
+const OPEN_FOLDER_PHRASE_FIXES: Array<[RegExp, string]> = [
+  [/^es\s+open\b/i, "open"],
+  [/\bopen\s+(?:the\s+)?documents\s+further\b/gi, "open my documents folder"],
+  [/\bopen\s+(?:the\s+)?downloads\s+further\b/gi, "open my downloads folder"],
+  [/\b(documents|downloads|desktop|pictures|photos|music|movies)\s+further\b/gi, "$1 folder"]
+];
+
 function stripTrailingPunctuation(value: string): string {
   return value.replace(/[.!?]+$/g, "").trim();
 }
@@ -71,6 +79,9 @@ export function normalizeVoiceTranscript(text: string): string {
   normalized = expandOpenFragments(normalized);
 
   if (OPEN_VERB.test(normalized) || /\b(?:open|launch|start|pull up|bring up|fire up|openup)\b/i.test(normalized)) {
+    for (const [pattern, replacement] of OPEN_FOLDER_PHRASE_FIXES) {
+      normalized = normalized.replace(pattern, replacement);
+    }
     for (const [pattern, replacement] of OPEN_APP_PHRASE_FIXES) {
       normalized = normalized.replace(pattern, replacement);
     }

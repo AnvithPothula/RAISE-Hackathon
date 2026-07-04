@@ -89,6 +89,40 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({ name: "open_app", args: { app: "spotify" } });
   });
 
+  it("opens known home folders instantly instead of sending them to the model", () => {
+    const decision = routeUserIntent("Open my downloads folder");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "list_folder",
+      args: { path: "downloads", action: "open" }
+    });
+  });
+
+  it("opens nested folders described in plain language", () => {
+    const decision = routeUserIntent("Open my GitHub folder, which is in my documents folder");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "list_folder",
+      args: { path: "Documents/GitHub", action: "open" }
+    });
+  });
+
+  it("opens github folders instead of treating them as apps", () => {
+    const decision = routeUserIntent("Open my GitHub folder");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "list_folder",
+      args: { path: "GitHub", action: "open" }
+    });
+  });
+
+  it("opens icloud drive as a folder instead of an app", () => {
+    const decision = routeUserIntent("Open my iCloud Drive");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation?.name).toBe("list_folder");
+    expect(decision.invocation?.args.action).toBe("open");
+  });
+
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
+import type { FilesystemAccess } from "./filesystemAccess.js";
 import { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { normalizeMathExpression } from "./mathExpression.js";
 
@@ -58,7 +59,9 @@ export type LocalToolServices = {
   captureScreen?: () => Promise<{ path: string; width: number; height: number }>;
   analyzeScreen?: (path: string, prompt: string) => Promise<string>;
   openApp?: (app: string) => Promise<AppOpenOutcome | void>;
+  openFolder?: (folderPath: string) => Promise<void>;
   openWebsite?: (url: string) => Promise<void>;
+  filesystemAccess?: FilesystemAccess;
   onAlarm?: (alarm: AlarmItem) => void;
   fetch?: FetchService;
   geocode?: GeocodeService;
@@ -433,7 +436,10 @@ export async function runNamedLocalTool(
   }
 
   if (name === "list_folder") {
-    return listFolder(args.path ?? args.query ?? "");
+    if (String(args.action ?? "").toLowerCase() === "open") {
+      return openHomeFolder(args.path ?? args.query ?? "", services);
+    }
+    return listFolder(args.path ?? args.query ?? "", services);
   }
 
   const requestedLocation = cleanLocation(args.location ?? "");
@@ -1571,26 +1577,74 @@ const HOME_FOLDER_ALIASES: Record<string, string> = {
   home: "."
 };
 
-/** List a folder under the user's home directory without an LLM or MCP round-trip. */
-function listFolder(pathArg: string): LocalToolResult {
+function resolveHomeFolderPath(pathArg: string): { ok: true; path: string } | { ok: false; message: string } {
   const homedir = os.homedir();
-  const normalized = pathArg.toLowerCase().replace(/\s+folder$/, "").trim();
+  const normalized = pathArg.toLowerCase().replace(/\s+(folder|directory)$/, "").trim();
   const segment = HOME_FOLDER_ALIASES[normalized] ?? pathArg.trim();
   const resolved = segment === "." ? homedir : path.join(homedir, segment);
   const resolvedReal = path.resolve(resolved);
   if (!resolvedReal.startsWith(homedir)) {
-    return { name: "list_folder", text: "I can only list folders in your home directory." };
+    return { ok: false, message: "I can only access folders in your home directory." };
+  }
+  if (!fs.existsSync(resolvedReal) || !fs.statSync(resolvedReal).isDirectory()) {
+    return { ok: false, message: `I couldn't find that folder at ${resolvedReal}.` };
+  }
+  return { ok: true, path: resolvedReal };
+}
+
+async function openHomeFolder(pathArg: string, services: LocalToolServices): Promise<LocalToolResult> {
+  const resolved = services.filesystemAccess
+    ? await services.filesystemAccess.resolveFolder(pathArg)
+    : resolveHomeFolderPath(pathArg);
+  if (!resolved.ok) {
+    return { name: "list_folder", text: resolved.message };
+  }
+  if (!services.openFolder) {
+    return { name: "list_folder", text: "Opening folders is not available in this runtime." };
   }
   try {
-    const entries = fs.readdirSync(resolvedReal, { withFileTypes: true }).slice(0, 30);
+    await services.openFolder(resolved.path);
+  } catch (error) {
+    return { name: "list_folder", text: `I couldn't open that folder: ${String(error)}` };
+  }
+  const label = path.basename(resolved.path) || "home";
+  const manager = process.platform === "darwin" ? "Finder" : process.platform === "win32" ? "File Explorer" : "your file manager";
+  return { name: "list_folder", text: `Opened ${label} in ${manager}.`, path: resolved.path };
+}
+
+/** List a folder under the user's home directory without an LLM or MCP round-trip. */
+async function listFolder(pathArg: string, services: LocalToolServices): Promise<LocalToolResult> {
+  if (services.filesystemAccess) {
+    const listed = await services.filesystemAccess.listFolderEntries(pathArg);
+    if (!listed.ok) {
+      return { name: "list_folder", text: listed.message };
+    }
+    if (!listed.lines.length) {
+      return { name: "list_folder", text: `${path.basename(listed.path) || "home"} is empty.`, path: listed.path };
+    }
+    const suffix = listed.truncated ? "\n(showing first entries)" : "";
+    return {
+      name: "list_folder",
+      text: `In ${path.basename(listed.path) || "home"}:\n${listed.lines.join("\n")}${suffix}`,
+      path: listed.path
+    };
+  }
+
+  const resolved = resolveHomeFolderPath(pathArg);
+  if (!resolved.ok) {
+    return { name: "list_folder", text: resolved.message };
+  }
+  try {
+    const entries = fs.readdirSync(resolved.path, { withFileTypes: true }).slice(0, 30);
     if (!entries.length) {
-      return { name: "list_folder", text: `${path.basename(resolvedReal) || "home"} is empty.` };
+      return { name: "list_folder", text: `${path.basename(resolved.path) || "home"} is empty.` };
     }
     const lines = entries.map((entry) => `${entry.isDirectory() ? "folder" : "file"}: ${entry.name}`);
     const suffix = entries.length >= 30 ? "\n(showing first 30 items)" : "";
     return {
       name: "list_folder",
-      text: `In ${path.basename(resolvedReal) || "home"}:\n${lines.join("\n")}${suffix}`
+      text: `In ${path.basename(resolved.path) || "home"}:\n${lines.join("\n")}${suffix}`,
+      path: resolved.path
     };
   } catch (error) {
     return { name: "list_folder", text: `I couldn't read that folder: ${String(error)}` };
