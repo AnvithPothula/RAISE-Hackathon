@@ -2,7 +2,12 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
+import {
+  collectInstantInvocations,
+  promptNeedsMultiToolLoop,
+  routeUserIntent,
+  resolveContextualLocalTool as resolveContextualFromRouter
+} from "./intentRouter.js";
 import { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { normalizeMathExpression } from "./mathExpression.js";
 
@@ -321,22 +326,38 @@ export async function runLocalTool(
   return null;
 }
 
-export function resolveDirectLocalTool(
+export function resolveDirectLocalTools(
   prompt: string,
   context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
-): LocalToolInvocation | null {
+): LocalToolInvocation[] {
+  const compound = collectInstantInvocations(prompt, context).map(normalizeOpenAppInvocation);
+  if (compound.length >= 2) {
+    return compound;
+  }
+  if (compound.length === 1 && !promptNeedsMultiToolLoop(prompt)) {
+    return compound;
+  }
+
   const decision = routeUserIntent(prompt, context);
   if (decision.invocation) {
-    return normalizeOpenAppInvocation(decision.invocation);
+    return [normalizeOpenAppInvocation(decision.invocation)];
   }
 
   const cleanPrompt = cleanDirectPrompt(prompt);
   const spotifyInvocation = resolveDirectSpotifyTool(cleanPrompt);
   if (spotifyInvocation) {
-    return spotifyInvocation;
+    return [spotifyInvocation];
   }
 
-  return null;
+  return [];
+}
+
+export function resolveDirectLocalTool(
+  prompt: string,
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+): LocalToolInvocation | null {
+  const invocations = resolveDirectLocalTools(prompt, context);
+  return invocations[0] ?? null;
 }
 
 function normalizeOpenAppInvocation(invocation: LocalToolInvocation): LocalToolInvocation {

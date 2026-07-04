@@ -23,7 +23,7 @@ import {
   isOpenAppFailure,
   openAppFailureMessage,
   resolveContextualLocalTool,
-  resolveDirectLocalTool,
+  resolveDirectLocalTools,
   runNamedLocalTool,
   type LocalToolArgs,
   type LocalToolName,
@@ -605,7 +605,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     previousToolName: lastRetryableTool?.name ?? null,
     knownLocation
   });
-  const directInvocation = resolveDirectLocalTool(prompt, {
+  const invocations = resolveDirectLocalTools(prompt, {
     previousToolName: lastRetryableTool?.name ?? null,
     knownLocation
   });
@@ -614,9 +614,17 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     lastRetryableTool?.name ?? null,
     knownLocation
   );
-  const invocation = directInvocation ?? contextualInvocation;
-  const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
-  if (!invocation) {
+  const toolsToRun = invocations.length ? invocations : contextualInvocation ? [contextualInvocation] : [];
+  const route =
+    invocations.length >= 2
+      ? "compound-direct"
+      : invocations.length === 1
+        ? "direct"
+        : contextualInvocation
+          ? "contextual-direct"
+          : "direct";
+
+  if (!toolsToRun.length) {
     emitDebugEvent("route gemma", {
       turnId: context.turnId,
       source: context.source,
@@ -628,31 +636,57 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     return null;
   }
 
-  debug(`direct local tool match name=${invocation.name} args=${JSON.stringify(invocation.args)}`);
+  debug(`direct local tool match count=${toolsToRun.length} tools=${toolsToRun.map((tool) => tool.name).join(",")}`);
   emitDebugEvent("route direct tool", {
     turnId: context.turnId,
     source: context.source,
     route,
     previousTool: lastRetryableTool?.name,
-    tool: invocation.name,
-    args: invocation.args
+    tools: toolsToRun.map((tool) => ({ name: tool.name, args: tool.args }))
   });
-  const startedAt = Date.now();
-  broadcastLocalToolEvent("start", {
-    name: invocation.name,
-    text: "Tool started",
-    args: invocation.args,
-    route,
-    source: context.source,
-    turnId: context.turnId
-  });
-  try {
-    const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
-    if (isOpenAppFailure(result)) {
-      const message = openAppFailureMessage(result);
-      debug(`direct local tool failed name=${invocation.name} error=${message}`);
-      broadcastLocalToolEvent("error", {
+
+  const responses: string[] = [];
+  for (const invocation of toolsToRun) {
+    const startedAt = Date.now();
+    broadcastLocalToolEvent("start", {
+      name: invocation.name,
+      text: "Tool started",
+      args: invocation.args,
+      route,
+      source: context.source,
+      turnId: context.turnId
+    });
+    try {
+      const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
+      if (isOpenAppFailure(result)) {
+        const message = openAppFailureMessage(result);
+        debug(`direct local tool failed name=${invocation.name} error=${message}`);
+        broadcastLocalToolEvent("error", {
+          ...result,
+          error: message,
+          args: invocation.args,
+          route,
+          source: context.source,
+          turnId: context.turnId,
+          durationMs: Date.now() - startedAt
+        });
+        responses.push(message);
+        continue;
+      }
+      broadcastLocalToolEvent("end", {
         ...result,
+        args: invocation.args,
+        route,
+        source: context.source,
+        turnId: context.turnId,
+        durationMs: Date.now() - startedAt
+      });
+      responses.push(result.text);
+    } catch (error) {
+      const message = formatDirectToolFailure(invocation.name, error);
+      debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
+      broadcastLocalToolEvent("error", {
+        name: invocation.name,
         error: message,
         args: invocation.args,
         route,
@@ -660,31 +694,11 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
         turnId: context.turnId,
         durationMs: Date.now() - startedAt
       });
-      return message;
+      responses.push(message);
     }
-    broadcastLocalToolEvent("end", {
-      ...result,
-      args: invocation.args,
-      route,
-      source: context.source,
-      turnId: context.turnId,
-      durationMs: Date.now() - startedAt
-    });
-    return result.text;
-  } catch (error) {
-    const message = formatDirectToolFailure(invocation.name, error);
-    debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
-    broadcastLocalToolEvent("error", {
-      name: invocation.name,
-      error: message,
-      args: invocation.args,
-      route,
-      source: context.source,
-      turnId: context.turnId,
-      durationMs: Date.now() - startedAt
-    });
-    return message;
   }
+
+  return responses.filter(Boolean).join(" ");
 }
 
 function staleTurnMessage(): string {
