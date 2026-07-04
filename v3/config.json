@@ -61,27 +61,38 @@
         "enabled": true,
         "transport": "stdio",
         "command": "node",
-        "args": ["scripts/pythos-mcp-server.mjs"]
+        "args": [
+          "scripts/pythos-mcp-server.mjs"
+        ]
       },
       {
         "name": "filesystem",
         "enabled": true,
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "."
+        ]
       },
       {
         "name": "memory",
         "enabled": true,
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-memory"],
-        "env": { "MEMORY_FILE_PATH": ".mcp-memory.json" }
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-memory"
+        ],
+        "env": {
+          "MEMORY_FILE_PATH": ".mcp-memory.json"
+        }
       }
     ]
   },
   "gui": {
-    "visualizer": "orb",
+    "visualizer": "compact",
     "showPerformanceStats": true,
     "maxTranscriptItems": 50
   },

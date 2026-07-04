@@ -42,6 +42,9 @@ export type ConversationItem = {
 /** How the local model chooses its thinking level. */
 export type ThinkMode = "auto" | "on" | "off";
 
+/** Explicit reasoning depth for supported Ollama models. */
+export type ThinkLevel = "none" | "low" | "medium" | "high";
+
 /** Per-request inference metrics reported by the local Ollama runtime. */
 export type ModelStats = {
   model: string;
@@ -104,7 +107,7 @@ export type AppConfig = {
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
-  ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode };
+  ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode; thinkLevel?: ThinkLevel };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };
