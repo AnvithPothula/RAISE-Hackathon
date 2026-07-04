@@ -210,6 +210,19 @@ const MAC_APP_ALIASES: Record<string, string> = {
   "default browser": "Safari",
   terminal: "Terminal",
   spotify: "Spotify",
+  discord: "Discord",
+  slack: "Slack",
+  zoom: "zoom.us",
+  teams: "Microsoft Teams",
+  "microsoft teams": "Microsoft Teams",
+  vscode: "Visual Studio Code",
+  "visual studio code": "Visual Studio Code",
+  cursor: "Cursor",
+  xcode: "Xcode",
+  whatsapp: "WhatsApp",
+  telegram: "Telegram",
+  obs: "OBS",
+  docker: "Docker",
   music: "Music",
   mail: "Mail",
   calendar: "Calendar",
@@ -287,7 +300,9 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
     return spotifyInvocation;
   }
 
-  const match = cleanPrompt.match(/^(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(.+)$/i);
+  const match = cleanPrompt.match(
+    /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
+  );
   if (!match) {
     return null;
   }
@@ -298,11 +313,11 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
   }
 
   const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
-  if (isKnownAppTarget(normalized, target)) {
-    return { name: "open_app", args: { app: target } };
-  }
   if (isWebsiteTarget(normalized, target)) {
     return { name: "open_website", args: { url: target } };
+  }
+  if (isDirectAppLaunchTarget(normalized, target)) {
+    return { name: "open_app", args: { app: target } };
   }
   return null;
 }
@@ -926,7 +941,21 @@ async function openWebsite(value: string, services: LocalToolServices): Promise<
 
 function normalizeAppName(value: string): string {
   const normalized = value.toLowerCase().replace(/\s+/g, " ").trim();
-  return APP_ALIASES[normalized] ?? value;
+  if (APP_ALIASES[normalized]) {
+    return APP_ALIASES[normalized];
+  }
+  if (process.platform === "darwin") {
+    return titleCaseAppName(value);
+  }
+  return value;
+}
+
+function titleCaseAppName(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 }
 
 function normalizeWebsiteUrl(value: string): string {
@@ -946,7 +975,8 @@ function normalizeWebsiteUrl(value: string): string {
 
 function stripOpenIntentWords(value: string): string {
   return value
-    .replace(/^(open|launch|start|go to|visit|browse to)\s+/i, "")
+    .replace(/^(open|launch|start|go to|visit|browse to|pull up|bring up|fire up)\s+/i, "")
+    .replace(/^(up|the|my|a|an)\s+/i, "")
     .replace(/\s+(for me|please|thanks|thank you)$/i, "")
     .replace(/\s+(website|site|webpage|app|application|program)$/i, "")
     .trim();
@@ -1205,6 +1235,38 @@ function isKnownAppTarget(normalized: string, target: string): boolean {
     return true;
   }
   return /^[a-z][a-z0-9+.-]*:/i.test(target.trim()) && !/^https?:/i.test(target.trim());
+}
+
+/** Short app names like "discord" or "visual studio" — skip the LLM and open directly. */
+function isDirectAppLaunchTarget(normalized: string, target: string): boolean {
+  if (isKnownAppTarget(normalized, target)) {
+    return true;
+  }
+  const stripped = normalized.replace(/^(the|my|a|an)\s+/, "").trim();
+  const words = stripped.split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 2) {
+    return false;
+  }
+  const blocked = new Set([
+    "pod",
+    "bay",
+    "doors",
+    "source",
+    "software",
+    "file",
+    "files",
+    "folder",
+    "document",
+    "window",
+    "tab",
+    "page",
+    "link",
+    "url"
+  ]);
+  if (words.some((word) => blocked.has(word))) {
+    return false;
+  }
+  return /^[a-z0-9][a-z0-9\s.-]*$/i.test(stripped);
 }
 
 function isWebsiteTarget(normalized: string, target: string): boolean {

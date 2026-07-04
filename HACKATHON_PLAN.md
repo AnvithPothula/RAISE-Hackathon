@@ -88,6 +88,16 @@ Team of 2 (Anvith + Griffin). Times are aggressive but real. **P0 = must ship. P
 
 ## Shipped Status (updated July 4, 2026 — event day)
 
+### Demo-day reliability fixes (from live dev-run log) ✅
+Real failures caught running `npm run dev` and fixed:
+
+| Symptom in log | Root cause | Fix |
+|----------------|-----------|-----|
+| "Open up Chrome." → Gemma said *"I can't open apps"* | Direct matcher missed the filler word "up"; then a 48-tool prompt made the 12B model hallucinate it was a file agent | Matcher now handles "open up/my/a X", "pull up X"; system prompt is cross-platform + explicitly affirms `open_app` |
+| "What's in my Downloads?" → `ENOENT .../v3/Downloads` | npx filesystem MCP was rooted at the repo | Disabled filesystem+memory MCP by default; the local `system` MCP server's home-sandboxed `list_directory` handles it correctly |
+| **TTFT 20–26s** per prompt | No `keep_alive` (model reloaded each turn) + 48 tools inflating prompt eval | `keep_alive: 30m` + startup warm-up (`warmUpModel`); MCP trimmed 48→25 tools. **Measured TTFT 20s → 1.7s, tok/s 11 → 17** |
+| System prompt said "Windows voice assistant" on a Mac | Stale copy | Rewritten cross-platform, adds `run_code`/`deep_research`, anti-"I can't" steer |
+
 ### P0 — Gemma on-device brain ✅
 | # | Task | Status |
 |---|------|--------|

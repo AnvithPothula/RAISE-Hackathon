@@ -14,6 +14,10 @@ import {
 const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 const DEFAULT_OLLAMA_MODEL = "gemma4:12b";
 const REQUEST_TIMEOUT_MS = 120000;
+// Keep the model resident in memory between turns. Without this, Ollama unloads
+// after ~5 min idle and every prompt eats a multi-second cold reload (the 20s+
+// TTFT seen in demos). 30m covers a full demo/judging session.
+const KEEP_ALIVE = process.env.PYTHOS_OLLAMA_KEEP_ALIVE || "30m";
 
 // Resolution order: explicit env override > config.json > built-in default. The
 // env override keeps CI/scripts flexible; config.json is what the app ships with.
@@ -81,6 +85,18 @@ export function decideThinking(prompt: string, mode: ThinkMode = "auto"): ThinkD
 
   const text = ` ${prompt.toLowerCase()} `;
   const words = text.split(/\s+/).filter(Boolean).length;
+  const operationalSignals = [
+    "open ",
+    "launch ",
+    "start ",
+    "pull up ",
+    "bring up "
+  ];
+  const matchedOperational = operationalSignals.find((signal) => text.includes(signal));
+  if (matchedOperational) {
+    return { think: false, reason: `detected "${matchedOperational.trim()}"` };
+  }
+
   const reasoningSignals = [
     "why ",
     "how do",
@@ -321,6 +337,7 @@ export async function analyzeImageWithOllama(
     model: resolveOllamaModel(config),
     stream: false,
     think: false,
+    keep_alive: KEEP_ALIVE,
     messages: [
       {
         role: "user",
@@ -353,6 +370,25 @@ export async function analyzeImageWithOllama(
     return `I captured the screen, but local Gemma vision failed: ${String(error)}.`;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+/**
+ * Preload the model into memory so the first real prompt is fast. Ollama's
+ * /api/generate with an empty prompt loads the weights and honors keep_alive
+ * without generating any tokens. Best-effort: failures are swallowed.
+ */
+export async function warmUpModel(config?: AppConfig): Promise<boolean> {
+  try {
+    const response = await fetch(`${resolveOllamaUrl(config)}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({ model: resolveOllamaModel(config), keep_alive: KEEP_ALIVE })
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -391,6 +427,7 @@ async function chat(
     messages,
     stream: false,
     think,
+    keep_alive: KEEP_ALIVE,
     // Gemma 4 recommended sampling.
     options: { temperature: 1.0, top_p: 0.95, top_k: 64 }
   };

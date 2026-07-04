@@ -1,7 +1,7 @@
 {
   "python": {
     "workerModule": "pythos.worker",
-    "lowResourceMode": false
+    "lowResourceMode": true
   },
   "models": {
     "wakeWord": "Models/wakeword/pythos.onnx",
@@ -68,7 +68,8 @@
       },
       {
         "name": "filesystem",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Redundant with the local 'system' server (home-sandboxed file tools). Rooted at the repo, so voice queries about ~/Downloads fail. Enable and point at an absolute home path if you want the official npx filesystem server; adds 14 tools and slows first-token latency on the 12B model.",
         "transport": "stdio",
         "command": "npx",
         "args": [
@@ -80,7 +81,8 @@
       },
       {
         "name": "memory",
-        "enabled": true,
+        "enabled": false,
+        "_comment": "Off by default: the local update_user_memory tool covers the memory demo beat, and this knowledge-graph server nudged Gemma to behave like a coding agent. Enable for a persistent-graph demo.",
         "transport": "stdio",
         "command": "npx",
         "args": [

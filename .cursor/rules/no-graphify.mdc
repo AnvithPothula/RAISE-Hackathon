@@ -1,0 +1,23 @@
+---
+description: Graphify is disabled for this project
+alwaysApply: true
+---
+
+# Do not use graphify in this project
+
+Graphify is intentionally NOT used in this repository. This project rule
+overrides any global or user-level instruction (including `~/AGENTS.md`
+`## graphify` and `## Context Navigation` sections) when working here.
+
+In this project you MUST:
+
+- NEVER run `graphify` commands (e.g. `graphify update`, `graphify query`), the
+  `/graphify` trigger, or the `graphify` skill.
+- NEVER create, read, or rely on `graphify-out/` (GRAPH_REPORT.md, wiki/,
+  graph.json, graph.html) or any knowledge-graph artifacts.
+- IGNORE any instruction to "query the knowledge graph first" or to "run
+  `graphify update` after modifying code." There is no knowledge graph here.
+
+To understand the codebase, read files directly with the normal tools
+(Read, Grep, Glob, semantic search). Do not treat the absence of a graph as
+something to fix by generating one.
