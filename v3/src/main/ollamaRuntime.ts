@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../shared/types.js";
-import { isOllamaReady, resolveActiveModel, warmUpModel } from "./ollamaClient.js";
+import { isOllamaReady, resolveInstalledOllamaModel, resolveOllamaModel, warmUpModel } from "./ollamaClient.js";
 
 const STARTUP_WAIT_MS = 45000;
 const POLL_MS = 500;
@@ -31,11 +31,16 @@ export type OllamaEnsureResult = {
  * launches if Ollama is missing; the user gets a clear error on first prompt.
  */
 export async function ensureOllamaReady(config: AppConfig): Promise<OllamaEnsureResult> {
-  const model = resolveActiveModel(config);
+  const model = await resolveInstalledOllamaModel(config);
   if (await isOllamaReady(config)) {
     // Preload weights in the background so the first prompt isn't a cold start.
     void warmUpModel(config);
-    return { ready: true, model, message: `Local Gemma ready (${model}).` };
+    const preferred = resolveOllamaModel(config);
+    const message =
+      model === preferred
+        ? `Local Gemma ready (${model}).`
+        : `Local Gemma ready (${model}). Low-resource model '${preferred}' is not pulled; using ${model} instead. Run: ollama pull ${preferred}`;
+    return { ready: true, model, message };
   }
 
   try {
@@ -51,8 +56,9 @@ export async function ensureOllamaReady(config: AppConfig): Promise<OllamaEnsure
   const deadline = Date.now() + STARTUP_WAIT_MS;
   while (Date.now() < deadline) {
     if (await isOllamaReady(config)) {
+      const installed = await resolveInstalledOllamaModel(config);
       void warmUpModel(config);
-      return { ready: true, model, message: `Started Ollama and loaded ${model}.` };
+      return { ready: true, model: installed, message: `Started Ollama and loaded ${installed}.` };
     }
     await sleep(POLL_MS);
   }

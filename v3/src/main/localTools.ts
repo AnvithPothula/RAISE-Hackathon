@@ -300,6 +300,16 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
     return spotifyInvocation;
   }
 
+  const weatherInvocation = resolveDirectWeatherTool(cleanPrompt);
+  if (weatherInvocation) {
+    return weatherInvocation;
+  }
+
+  const timeInvocation = resolveDirectTimeTool(cleanPrompt);
+  if (timeInvocation) {
+    return timeInvocation;
+  }
+
   const match = cleanPrompt.match(
     /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
   );
@@ -980,6 +990,32 @@ function stripOpenIntentWords(value: string): string {
     .replace(/\s+(for me|please|thanks|thank you)$/i, "")
     .replace(/\s+(website|site|webpage|app|application|program)$/i, "")
     .trim();
+}
+
+function resolveDirectWeatherTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (!/\b(weather|forecast|temperature|temp|rain|snow|wind|humidity|sunny|cloudy)\b/.test(normalized)) {
+    return null;
+  }
+  const location = extractLocationFromPrompt(prompt);
+  return { name: "weather", args: location ? { location } : {} };
+}
+
+function resolveDirectTimeTool(prompt: string): LocalToolInvocation | null {
+  const normalized = normalizeCommandText(prompt);
+  if (/\b(weather|forecast|temperature|temp|rain|snow|wind)\b/.test(normalized)) {
+    return null;
+  }
+  const asksTime =
+    /\b(what time|what s the time|whats the time|current time|time is it|what date|what s the date|what day)\b/.test(
+      normalized
+    ) ||
+    (/\b(time|date|day)\b/.test(normalized) && /\b(what|current|now|today|tonight|tomorrow)\b/.test(normalized));
+  if (!asksTime) {
+    return null;
+  }
+  const location = extractLocationFromPrompt(prompt);
+  return { name: "time", args: location ? { location } : {} };
 }
 
 function resolveDirectSpotifyTool(prompt: string): LocalToolInvocation | null {
@@ -1671,9 +1707,13 @@ async function geocode(location: string, fetchService?: FetchService): Promise<G
 }
 
 export function extractLocationFromPrompt(prompt: string): string | null {
-  const explicit = prompt.match(/\b(?:in|for|near|at)\s+([a-z][a-z\s,.-]{2,})(?:[?.!]+)?$/i);
+  const explicit = prompt.match(/\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})(?:[?.!]+)?$/i);
   if (explicit) {
     return cleanLocation(explicit[1]);
+  }
+  const embedded = prompt.match(/\b(?:weather|forecast|temperature|temp|time|date)\b[^?.!]*\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})/i);
+  if (embedded) {
+    return cleanLocation(embedded[1]);
   }
   return null;
 }

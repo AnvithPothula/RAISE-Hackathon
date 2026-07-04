@@ -25,7 +25,7 @@ function resolveOllamaUrl(config?: AppConfig): string {
   return (process.env.PYTHOS_OLLAMA_URL || config?.ollama?.baseUrl || DEFAULT_OLLAMA_URL).replace(/\/+$/, "");
 }
 
-function resolveOllamaModel(config?: AppConfig): string {
+export function resolveOllamaModel(config?: AppConfig): string {
   if (process.env.PYTHOS_OLLAMA_MODEL) {
     return process.env.PYTHOS_OLLAMA_MODEL;
   }
@@ -40,7 +40,44 @@ function resolveOllamaModel(config?: AppConfig): string {
 
 /** The Gemma model that will actually serve requests for this config (honors low-resource mode). */
 export function resolveActiveModel(config?: AppConfig): string {
-  return resolveOllamaModel(config);
+  return installedModelOverride ?? resolveOllamaModel(config);
+}
+
+let installedModelOverride: string | null = null;
+
+async function listPulledModelNames(config?: AppConfig): Promise<string[]> {
+  try {
+    const response = await fetch(`${resolveOllamaUrl(config)}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+    return (payload.models ?? []).map((model) => model.name ?? "").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Pick a pulled model, falling back from low-resource to the default when needed. */
+export async function resolveInstalledOllamaModel(config?: AppConfig): Promise<string> {
+  const preferred = resolveOllamaModel(config);
+  const pulled = await listPulledModelNames(config);
+  if (pulled.includes(preferred)) {
+    installedModelOverride = preferred;
+    return preferred;
+  }
+  const fallback = config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
+  if (preferred !== fallback && pulled.includes(fallback)) {
+    installedModelOverride = fallback;
+    return fallback;
+  }
+  const anyGemma = pulled.find((name) => name.startsWith("gemma4:"));
+  if (anyGemma) {
+    installedModelOverride = anyGemma;
+    return anyGemma;
+  }
+  installedModelOverride = preferred;
+  return preferred;
 }
 
 type OllamaToolCall = {
@@ -334,7 +371,7 @@ export async function analyzeImageWithOllama(
   }
 
   const body = {
-    model: resolveOllamaModel(config),
+    model: await resolveInstalledOllamaModel(config),
     stream: false,
     think: false,
     keep_alive: KEEP_ALIVE,
@@ -380,11 +417,12 @@ export async function analyzeImageWithOllama(
  */
 export async function warmUpModel(config?: AppConfig): Promise<boolean> {
   try {
+    const model = await resolveInstalledOllamaModel(config);
     const response = await fetch(`${resolveOllamaUrl(config)}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model: resolveOllamaModel(config), keep_alive: KEEP_ALIVE })
+      body: JSON.stringify({ model, keep_alive: KEEP_ALIVE })
     });
     return response.ok;
   } catch {
@@ -392,19 +430,18 @@ export async function warmUpModel(config?: AppConfig): Promise<boolean> {
   }
 }
 
-/** True if the local Ollama server is reachable and has the configured model pulled. */
+/** True if the local Ollama server is reachable and has a usable Gemma model pulled. */
 export async function isOllamaReady(config?: AppConfig): Promise<boolean> {
-  try {
-    const response = await fetch(`${resolveOllamaUrl(config)}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (!response.ok) {
-      return false;
-    }
-    const payload = (await response.json()) as { models?: Array<{ name?: string }> };
-    const base = resolveOllamaModel(config).split(":")[0];
-    return (payload.models ?? []).some((model) => (model.name ?? "").startsWith(base));
-  } catch {
+  const pulled = await listPulledModelNames(config);
+  if (!pulled.length) {
     return false;
   }
+  const preferred = resolveOllamaModel(config);
+  if (pulled.includes(preferred)) {
+    return true;
+  }
+  const fallback = config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
+  return pulled.includes(fallback) || pulled.some((name) => name.startsWith("gemma4:"));
 }
 
 type ChatOptions = {
@@ -420,7 +457,7 @@ async function chat(
   opts: ChatOptions = {}
 ): Promise<{ content?: string; tool_calls?: OllamaToolCall[] }> {
   const url = resolveOllamaUrl(config);
-  const model = resolveOllamaModel(config);
+  const model = await resolveInstalledOllamaModel(config);
   const think = opts.think ?? false;
   const body: Record<string, unknown> = {
     model,

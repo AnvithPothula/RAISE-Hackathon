@@ -372,6 +372,22 @@ describe("resolveDirectLocalTool", () => {
     expect(resolveDirectLocalTool("open example.com")).toEqual({ name: "open_website", args: { url: "example.com" } });
   });
 
+  it("routes weather and time questions without model help", () => {
+    expect(resolveDirectLocalTool("How is the weather like in Eagan, MN?")).toEqual({
+      name: "weather",
+      args: { location: "Eagan, MN" }
+    });
+    expect(resolveDirectLocalTool("what's the weather in Boston")).toEqual({
+      name: "weather",
+      args: { location: "Boston" }
+    });
+    expect(resolveDirectLocalTool("what time is it in Tokyo")).toEqual({
+      name: "time",
+      args: { location: "Tokyo" }
+    });
+    expect(resolveDirectLocalTool("what time is it")).toEqual({ name: "time", args: {} });
+  });
+
   it("routes Spotify playback controls without model help", () => {
     expect(resolveDirectLocalTool("play people pleaser on spotify")).toEqual({
       name: "spotify",

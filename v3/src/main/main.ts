@@ -476,7 +476,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     }, 5000);
     return { text, toolUsed };
   } catch (error) {
-    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
+    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
     debug(`echo gemma response failed ${String(error)}`);
     emitDebugEvent("gemma failed", { turnId, source: "echo", error: String(error) });
     broadcastAssistantText(message, "error");
@@ -663,7 +663,7 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
     }
     debug(`gemma response failed ${String(error)}`);
     emitDebugEvent("gemma failed", { turnId, source: "typed", error: String(error) });
-    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
+    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -715,7 +715,7 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
   } catch (error) {
     debug(`gemma response failed ${String(error)}`);
     emitDebugEvent("gemma fallback failed", { source: "fallback", error: String(error) });
-    const message = `I could not reach Pi or the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
+    const message = `I could not reach Pi or the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
