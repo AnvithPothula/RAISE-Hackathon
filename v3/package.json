@@ -1,0 +1,35 @@
+{
+  "name": "pythos-v3",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"npm:dev:electron\"",
+    "dev:electron": "wait-on tcp:5173 && npm run clean:electron && tsc -p tsconfig.electron.json && npm run copy:preload && electron .",
+    "build": "npm run clean && tsc -p tsconfig.electron.json && npm run copy:preload && vite build",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
+    "clean:electron": "node -e \"for (const p of ['dist/main','dist/preload','dist/shared']) fs.rmSync(p,{recursive:true,force:true})\"",
+    "copy:preload": "node -e \"fs.mkdirSync('dist/preload',{recursive:true}); fs.copyFileSync('src/preload/preload.cjs','dist/preload/preload.cjs')\"",
+    "test": "vitest run",
+    "test:python": "python -m pytest"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^39.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typebox": "^1.0.0",
+    "vite": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
+    "wait-on": "^8.0.0"
+  }
+}

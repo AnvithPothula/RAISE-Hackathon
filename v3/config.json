@@ -1,0 +1,52 @@
+{
+  "python": {
+    "workerModule": "pythos.worker",
+    "lowResourceMode": true
+  },
+  "models": {
+    "wakeWord": "Models/wakeword/pythos.onnx",
+    "vosk": "Models/vosk/vosk-model-en-us-0.22",
+    "piperExecutable": "Models/piper/piper.exe",
+    "piperModel": "Models/piper/model.onnx",
+    "piperConfig": "Models/piper/model.onnx.json"
+  },
+  "audio": {
+    "chunk": 1280,
+    "rate": 16000,
+    "channels": 1,
+    "wakeWord": "pythos",
+    "wakeThreshold": 0.25,
+    "asrTimeoutSeconds": 10,
+    "silenceTimeoutSeconds": 3,
+    "ttsLengthScale": 1.15
+  },
+  "ollama": {
+    "baseUrl": "http://localhost:11434",
+    "model": "gemma4:e2b",
+    "think": "low"
+  },
+  "pi": {
+    "command": "pi",
+    "args": [
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--model",
+      "ollama/gemma4:e2b",
+      "--extension",
+      ".pi/extensions/pythos-safe-tools.ts",
+      "--skill",
+      ".pi/skills"
+    ],
+    "cwd": ".",
+    "enabled": true
+  },
+  "gui": {
+    "visualizer": "orb",
+    "showPerformanceStats": true,
+    "maxTranscriptItems": 50
+  },
+  "spotify": {
+    "clientId": "3669ef357d6541c0af00e3dd8089823d"
+  }
+}

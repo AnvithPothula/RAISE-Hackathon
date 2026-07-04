@@ -1,0 +1,24 @@
+[project]
+name = "pythos-v3-worker"
+version = "0.1.0"
+description = "Python audio worker for the Pythos v3 desktop assistant."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "pygame",
+  "vosk",
+  "openwakeword",
+  "pyaudio"
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+pythonpath = ["src"]
+testpaths = ["tests/python"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="pythos_bg">#0B1016</color>
+    <color name="pythos_panel">#111923</color>
+    <color name="pythos_text">#EFF6FF</color>
+    <color name="pythos_muted">#8EA7C7</color>
+    <color name="pythos_accent">#68E4BF</color>
+</resources>

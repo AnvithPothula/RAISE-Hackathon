@@ -1,0 +1,5 @@
+{
+  "enableSkillCommands": true,
+  "extensions": [".pi/extensions/pythos-safe-tools.ts"],
+  "skills": [".pi/skills"]
+}
