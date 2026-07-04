@@ -1,8 +1,5 @@
 import {
-  Activity,
   AlertCircle,
-  Bot,
-  Cpu,
   Download,
   History,
   MessageSquare,
@@ -15,7 +12,6 @@ import {
   Settings,
   Square,
   Trash2,
-  WifiOff,
   Wrench,
   X,
   Zap
@@ -50,15 +46,15 @@ type ConnectedNode = {
 const QUICK_REPLIES = [
   "What can you do?",
   "What's on my screen?",
-  "Open my calendar",
-  "Summarize my clipboard",
-  "Play something relaxing"
+  "How's the weather?"
 ];
+
+type SideTab = "chat" | "activity";
 
 const TOOL_ICONS: Record<string, React.ElementType> = {
   spotify: Zap,
   system: Settings,
-  browser: Activity,
+  browser: Zap,
   file: History,
   default: Wrench
 };
@@ -89,7 +85,8 @@ export function App() {
   const [streamingText, setStreamingText] = useState<{ id: string; text: string } | null>(null);
   const [startTime] = useState(() => Date.now());
   const [showStats, setShowStats] = useState(false);
-  const [sideWidth, setSideWidth] = useState(390);
+  const [sideWidth, setSideWidth] = useState(340);
+  const [sideTab, setSideTab] = useState<SideTab>("chat");
   const [isResizing, setIsResizing] = useState(false);
 
   const toolFlashTimer = useRef<number | null>(null);
@@ -437,8 +434,6 @@ export function App() {
           state={state}
           statusText={statusText}
           configSummary={configSummary}
-          piStatus={piStatus}
-          mcpStatus={mcpStatus}
           online={online}
           modelStats={modelStats}
           showPerf={Boolean(config?.gui?.showPerformanceStats)}
@@ -481,6 +476,8 @@ export function App() {
       </section>
 
       <SidePanel
+        sideTab={sideTab}
+        onSideTabChange={setSideTab}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         visibleConversation={visibleConversation}
@@ -490,7 +487,6 @@ export function App() {
         onExport={exportTranscript}
         onClear={clearContext}
         onClearToolEvents={() => setToolEvents([])}
-        onInspect={setInspectingNode}
         isResizing={isResizing}
         onResizeStart={startResize}
       />
@@ -520,8 +516,6 @@ function TopBar({
   state,
   statusText,
   configSummary,
-  piStatus,
-  mcpStatus,
   online,
   modelStats,
   showPerf
@@ -529,54 +523,28 @@ function TopBar({
   state: AssistantState;
   statusText: string;
   configSummary: string;
-  piStatus: PiStatus | null;
-  mcpStatus: McpStatus | null;
   online: boolean;
   modelStats: ModelStats | null;
   showPerf: boolean;
 }) {
+  const perfHint =
+    showPerf && modelStats && modelStats.tokensPerSecond > 0
+      ? ` · ${modelStats.tokensPerSecond} tok/s`
+      : "";
+
   return (
     <header className="topbar">
       <div className="title-block">
         <p className="eyebrow">
           <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
-          Pythos v3
+          Pythos
         </p>
         <h1>{statusText}</h1>
-      </div>
-      <div className="status-chips">
-        <div className="status-pill" title="Local model">
-          <Activity size={14} />
+        <p className="topbar-meta">
           {configSummary}
-        </div>
-        <div className="status-pill" title="Pi status">
-          <Bot size={14} />
-          {formatPiStatus(piStatus)}
-        </div>
-        {mcpStatus?.enabled && (
-          <div className="status-pill" title="MCP servers">
-            <Wrench size={14} />
-            {mcpStatus.servers.filter((s) => s.connected).length}/{mcpStatus.servers.length} MCP
-          </div>
-        )}
-        {!online && (
-          <div className="status-pill offline" title="Network status">
-            <WifiOff size={14} />
-            Offline
-          </div>
-        )}
-        {modelStats?.thinking && (
-          <div className="status-pill thinking" title="Thinking mode">
-            <Cpu size={14} />
-            {modelStats.thinkReason ? `Thinking: ${modelStats.thinkReason}` : "Thinking"}
-          </div>
-        )}
-        {showPerf && modelStats && modelStats.tokensPerSecond > 0 && (
-          <div className="status-pill perf" title="Performance">
-            <Cpu size={14} />
-            {modelStats.tokensPerSecond} tok/s · TTFT {modelStats.ttftSeconds}s
-          </div>
-        )}
+          {!online && " · Offline"}
+          {perfHint}
+        </p>
       </div>
     </header>
   );
@@ -670,63 +638,52 @@ function ControlDock({
 }) {
   return (
     <div className="control-dock">
+      <form className="text-prompt" onSubmit={onSubmit}>
+        <input
+          ref={promptRef}
+          value={typedPrompt}
+          onChange={(event) => onTypedPromptChange(event.target.value)}
+          placeholder="Ask Pythos anything…"
+          aria-label="Type a prompt"
+        />
+        <button className="text-send" type="submit" title="Send (Enter)" disabled={!typedPrompt.trim()}>
+          <Send size={18} />
+        </button>
+      </form>
+
       <div className="controls" aria-label="Voice controls">
         <button
           className={voiceButtonClass("wakeword", wakeSessionArmed || state === "wakeword", pendingVoiceAction)}
           onClick={onToggleWakeword}
           title={wakeSessionArmed || state === "wakeword" ? "Stop wake word (W)" : "Arm wake word (W)"}
           aria-pressed={wakeSessionArmed || state === "wakeword"}
-          data-label="Wake"
         >
-          <Radio size={20} />
+          <Radio size={18} />
+          <span>Wake</span>
         </button>
         <button
           className={voiceButtonClass("mic", state === "listening", pendingVoiceAction)}
           onClick={onToggleMic}
           title={state === "listening" ? "Stop listening (Space)" : "Start push to talk (Space)"}
           aria-pressed={state === "listening"}
-          data-label="Talk"
         >
-          {state === "listening" ? <MicOff size={20} /> : <Mic size={20} />}
+          {state === "listening" ? <MicOff size={18} /> : <Mic size={18} />}
+          <span>{state === "listening" ? "Stop" : "Talk"}</span>
         </button>
-        <button className="icon-button" onClick={onStop} title="Stop current work (Esc)" data-label="Stop">
-          <Square size={20} />
+        <button className="icon-button ghost" onClick={onStop} title="Stop (Esc)">
+          <Square size={18} />
         </button>
-        <button className="icon-button" onClick={onClear} title="Clear transcript and context" data-label="Clear">
-          <Trash2 size={20} />
+        <button className="icon-button ghost" onClick={onClear} title="Clear transcript">
+          <Trash2 size={18} />
         </button>
-        <button className="icon-button" onClick={() => window.pythos?.getPiCommands()} title="Refresh Pi tools" data-label="Tools">
-          <Wrench size={20} />
-        </button>
-        <button className="icon-button" onClick={onSettings} title="Settings (,)" data-label="Settings">
-          <Settings size={20} />
+        <button className="icon-button ghost" onClick={onSettings} title="Settings (,)">
+          <Settings size={18} />
         </button>
       </div>
-
-      <div className="shortcuts-hint">
-        <span><kbd>Space</kbd> Talk</span>
-        <span><kbd>W</kbd> Wake</span>
-        <span><kbd>Esc</kbd> Stop</span>
-        <span><kbd>/</kbd> Type</span>
-        <span><kbd>,</kbd> Settings</span>
-      </div>
-
-      <form className="text-prompt" onSubmit={onSubmit}>
-        <input
-          ref={promptRef}
-          value={typedPrompt}
-          onChange={(event) => onTypedPromptChange(event.target.value)}
-          placeholder="Type to Pythos"
-          aria-label="Type a prompt"
-        />
-        <button className="text-send" type="submit" title="Send typed prompt" disabled={!typedPrompt.trim()}>
-          <Send size={18} />
-        </button>
-      </form>
 
       <div className="quick-replies">
         {QUICK_REPLIES.map((text) => (
-          <button key={text} className="quick-reply" onClick={() => onQuickReply(text)}>
+          <button key={text} className="quick-reply" type="button" onClick={() => onQuickReply(text)}>
             {text}
           </button>
         ))}
@@ -736,6 +693,8 @@ function ControlDock({
 }
 
 function SidePanel({
+  sideTab,
+  onSideTabChange,
   searchQuery,
   onSearchChange,
   visibleConversation,
@@ -745,10 +704,11 @@ function SidePanel({
   onExport,
   onClear,
   onClearToolEvents,
-  onInspect,
   isResizing,
   onResizeStart
 }: {
+  sideTab: SideTab;
+  onSideTabChange: (tab: SideTab) => void;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   visibleConversation: ConversationItem[];
@@ -758,95 +718,118 @@ function SidePanel({
   onExport: () => void;
   onClear: () => void;
   onClearToolEvents: () => void;
-  onInspect: (node: ConnectedNode) => void;
   isResizing: boolean;
   onResizeStart: (event: React.MouseEvent) => void;
 }) {
+  const activityCount = toolEvents.length;
+
   return (
     <aside className="side-panel">
       <div className={`resize-handle ${isResizing ? "dragging" : ""}`} onMouseDown={onResizeStart} title="Drag to resize" />
 
-      <section className="panel-section conversation-section">
-        <header>
-          <h2><MessageSquare size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Conversation</h2>
-          <div className="panel-actions">
-            <div className="search-bar">
-              <Search size={13} />
-              <input
-                value={searchQuery}
-                onChange={(event) => onSearchChange(event.target.value)}
-                placeholder="Search..."
-                aria-label="Search transcript"
-              />
-            </div>
-            <button className="panel-action" onClick={onExport} title="Export transcript">
-              <Download size={14} />
+      <section className="panel-section side-panel-main">
+        <header className="side-panel-header">
+          <div className="side-tabs" role="tablist" aria-label="Sidebar panels">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={sideTab === "chat"}
+              className={`side-tab ${sideTab === "chat" ? "active" : ""}`}
+              onClick={() => onSideTabChange("chat")}
+            >
+              <MessageSquare size={14} />
+              Chat
             </button>
-            <button className="panel-action" onClick={onClear} title="Clear transcript">
-              <Trash2 size={14} />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={sideTab === "activity"}
+              className={`side-tab ${sideTab === "activity" ? "active" : ""}`}
+              onClick={() => onSideTabChange("activity")}
+            >
+              <Zap size={14} />
+              Activity
+              {activityCount > 0 && <span className="side-tab-badge">{activityCount}</span>}
             </button>
           </div>
+          <div className="panel-actions">
+            {sideTab === "chat" && (
+              <>
+                <div className="search-bar">
+                  <Search size={13} />
+                  <input
+                    value={searchQuery}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder="Search"
+                    aria-label="Search transcript"
+                  />
+                </div>
+                <button className="panel-action" onClick={onExport} title="Export transcript">
+                  <Download size={14} />
+                </button>
+                <button className="panel-action" onClick={onClear} title="Clear transcript">
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
+            {sideTab === "activity" && (
+              <button className="panel-action" onClick={onClearToolEvents} title="Clear activity">
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
         </header>
-        <div className="conversation-list">
-          {visibleConversation.length === 0 ? (
-            <div className="empty-state">
-              <MessageSquare size={32} />
-              <p>No transcript yet</p>
-              <small>Speak or type to start a conversation.</small>
-            </div>
-          ) : (
-            visibleConversation.map((item) => (
-              <article className={`message ${item.role}`} key={item.id}>
-                <header>
-                  <span>{roleLabel(item.role)}</span>
-                  <time>{formatTime(item.timestamp)}</time>
-                </header>
-                <p className={streamingText?.id === item.id ? "streaming" : ""}>{item.text}</p>
-              </article>
-            ))
-          )}
-        </div>
-      </section>
 
-      <section className="panel-section compact-section">
-        <header>
-          <h2><Wrench size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />MCP Connectors</h2>
-          <span className="panel-meta">{mcpStatus?.enabled ? `${mcpStatus.servers.filter((s) => s.connected).length}/${mcpStatus.servers.length} connected` : "disabled"}</span>
-        </header>
-        <div className="mcp-list">
-          {!mcpStatus?.enabled || !mcpStatus.servers.length ? (
-            <p className="muted">MCP disabled or no servers configured.</p>
-          ) : (
-            mcpStatus.servers.map((server) => (
-              <div className={`mcp-row ${server.connected ? "connected" : "disconnected"}`} key={server.name}>
-                <span>{server.name} ({server.toolCount} tools)</span>
-                <span>{server.connected ? "connected" : server.error ?? "offline"}</span>
+        {sideTab === "chat" ? (
+          <div className="conversation-list" role="tabpanel">
+            {visibleConversation.length === 0 ? (
+              <div className="empty-state">
+                <MessageSquare size={28} />
+                <p>No messages yet</p>
+                <small>Use the mic or type below to start.</small>
               </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="panel-section">
-        <header>
-          <h2><Zap size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Tool Timeline</h2>
-          <div className="panel-actions">
-            <button className="panel-action" onClick={onClearToolEvents} title="Clear tool events">
-              <Trash2 size={14} />
-            </button>
+            ) : (
+              visibleConversation.map((item) => (
+                <article className={`message ${item.role}`} key={item.id}>
+                  <header>
+                    <span>{roleLabel(item.role)}</span>
+                    <time>{formatTime(item.timestamp)}</time>
+                  </header>
+                  <p className={streamingText?.id === item.id ? "streaming" : ""}>{item.text}</p>
+                </article>
+              ))
+            )}
           </div>
-        </header>
-        <div className="tool-list">
-          {toolEvents.length === 0 ? (
-            <div className="empty-state">
-              <Wrench size={32} />
-              <p>Tool events will appear here</p>
-              <small>Pi events, MCP calls, and local tools show in this timeline.</small>
+        ) : (
+          <div className="activity-panel" role="tabpanel">
+            {mcpStatus?.enabled && mcpStatus.servers.length > 0 && (
+              <div className="activity-block">
+                <h3>Connectors</h3>
+                <div className="mcp-list compact">
+                  {mcpStatus.servers.map((server) => (
+                    <div className={`mcp-row ${server.connected ? "connected" : "disconnected"}`} key={server.name}>
+                      <span>{server.name}</span>
+                      <span>{server.connected ? `${server.toolCount} tools` : "offline"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="activity-block fill">
+              <h3>Tool runs</h3>
+              <div className="tool-list">
+                {toolEvents.length === 0 ? (
+                  <div className="empty-state compact">
+                    <Wrench size={24} />
+                    <p>No tool activity</p>
+                  </div>
+                ) : (
+                  toolEvents.map((event, index) => <ToolEventCard event={event} key={`${event.type}-${index}`} />)
+                )}
+              </div>
             </div>
-          ) : (
-            toolEvents.map((event, index) => <ToolEventCard event={event} key={`${event.type}-${index}`} />)
-          )}
-        </div>
+          </div>
+        )}
       </section>
     </aside>
   );

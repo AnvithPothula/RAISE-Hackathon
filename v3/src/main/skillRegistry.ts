@@ -55,6 +55,7 @@ export function buildDynamicSkillPrompt(): string {
 export function discoverSkills(): DiscoveredSkill[] {
   const roots: Array<{ dir: string; source: DiscoveredSkill["source"] }> = [
     { dir: path.join(appRoot, ".pi", "skills"), source: "app" },
+    { dir: path.join(appRoot, ".codex", "skills"), source: "app" },
     { dir: path.join(os.homedir(), ".codex", "skills"), source: "user" }
   ];
   const seen = new Set<string>();
