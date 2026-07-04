@@ -176,7 +176,7 @@ export function App() {
   const statusText = useMemo(() => {
     if (state === "idle") return "Ready";
     if (state === "loading") return "Loading audio";
-    if (state === "wakeword") return `Say ${String(config?.audio?.wakeWord ?? "pythos")}`;
+    if (state === "wakeword") return `Say ${String(config?.audio?.wakeWord ?? "mark")}`;
     if (state === "listening") return partial || "Listening";
     if (state === "thinking") return "Thinking";
     if (state === "speaking") return "Speaking";
