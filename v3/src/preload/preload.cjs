@@ -10,6 +10,7 @@ const api = {
   abortPi: () => ipcRenderer.invoke("pi:abort"),
   getPiCommands: () => ipcRenderer.invoke("pi:getCommands"),
   getPiStatus: () => ipcRenderer.invoke("pi:getStatus"),
+  getMcpStatus: () => ipcRenderer.invoke("mcp:getStatus"),
   promptAssistant: (message) => ipcRenderer.invoke("assistant:prompt", message),
   clearAssistantContext: () => ipcRenderer.invoke("assistant:clearContext"),
   getConfig: () => ipcRenderer.invoke("app:getConfig"),
@@ -29,6 +30,11 @@ const api = {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("pi:status", listener);
     return () => ipcRenderer.off("pi:status", listener);
+  },
+  onMcpStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("mcp:status", listener);
+    return () => ipcRenderer.off("mcp:status", listener);
   },
   onAssistantState: (callback) => {
     const listener = (_event, state) => callback(state);

@@ -7,6 +7,7 @@ import { readConfig, writeConfig } from "./config.js";
 import { generateWithGemini, resolveGeminiApiKey } from "./geminiClient.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
+import { McpManager } from "./mcpManager.js";
 import {
   extractUserLocation,
   resolveContextualLocalTool,
@@ -20,12 +21,13 @@ import { EchoBridge, type EchoBridgeEvent, type EchoPromptReply } from "./echoBr
 import { createExternalLocalToolServices } from "./externalServices.js";
 import { UserMemoryStore } from "./userMemory.js";
 import { isRetryPrompt } from "./toolRetry.js";
-import type { WorkerEvent } from "../shared/types.js";
+import type { McpStatus, WorkerEvent } from "../shared/types.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 let config = readConfig();
 const pythonWorker = new PythonWorkerBridge();
 const pi = new PiRpcBridge(config.pi);
+const mcp = new McpManager(config.mcp);
 const echoBridge = new EchoBridge({
   onPrompt: handleEchoPrompt,
   onEvent: handleEchoBridgeEvent
@@ -114,11 +116,22 @@ function createWindow(): void {
   });
 }
 
+mcp.on("status", (status: McpStatus) => {
+  if (!isQuitting) {
+    broadcast("mcp:status", status);
+    emitDebugEvent("mcp status", {
+      enabled: status.enabled,
+      servers: status.servers.map((server) => `${server.name}:${server.connected ? server.toolCount : "off"}`).join(",")
+    });
+  }
+});
+
 app.whenReady().then(() => {
   debug("app ready");
   createWindow();
   pythonWorker.start();
   echoBridge.start();
+  void mcp.init().catch((error) => debug(`mcp init failed ${String(error)}`));
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -135,6 +148,7 @@ app.on("window-all-closed", () => {
   pythonWorker.stop();
   echoBridge.stop();
   pi.stop();
+  void mcp.shutdown();
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -277,6 +291,7 @@ ipcMain.handle("pi:prompt", (_event, message: string) => pi.prompt(message));
 ipcMain.handle("pi:abort", () => pi.abort());
 ipcMain.handle("pi:getCommands", () => pi.getCommands());
 ipcMain.handle("pi:getStatus", () => pi.getStatus());
+ipcMain.handle("mcp:getStatus", () => mcp.getStatus());
 ipcMain.handle("assistant:prompt", (_event, prompt: string) => {
   const clean = String(prompt ?? "").trim();
   if (!clean) {
@@ -298,6 +313,7 @@ ipcMain.handle("app:saveConfig", (_event, nextConfig) => {
   config = writeConfig(nextConfig);
   localToolServices.spotify = config.spotify;
   pi.updateConfig(config.pi);
+  void mcp.updateConfig(config.mcp).catch((error) => debug(`mcp reload failed ${String(error)}`));
   pythonWorker.restart();
   broadcast("assistant:state", "idle");
   return config;
@@ -414,6 +430,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
         knownLocation,
         userMemory: userMemory.summary(),
         localToolServices,
+        mcp,
         onToolEvent: (phase, result) => {
           if (phase === "start") {
             toolUsed = true;
@@ -600,6 +617,7 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
         knownLocation,
         userMemory: userMemory.summary(),
         localToolServices,
+        mcp,
         onToolEvent: (phase, result) =>
           broadcastLocalToolEvent(phase, { ...result, route: "gemini", source: "typed", turnId })
       })
@@ -661,6 +679,7 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
         knownLocation,
         userMemory: userMemory.summary(),
         localToolServices,
+        mcp,
         onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" })
       })
     );

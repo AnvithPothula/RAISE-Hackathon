@@ -11,6 +11,7 @@ import {
   type LocalToolServices
 } from "./localTools.js";
 import { buildDynamicSkillPrompt } from "./skillRegistry.js";
+import type { McpManager } from "./mcpManager.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -20,6 +21,7 @@ export type GeminiContext = {
   userMemory?: string;
   prompt?: string;
   localToolServices?: LocalToolServices;
+  mcp?: McpManager;
   onToolEvent?: (phase: "start" | "end" | "error", result: GeminiToolEventResult) => void;
 };
 
@@ -50,7 +52,10 @@ type GeminiResponse = {
 
 type GeminiToolEventResult =
   | (LocalToolResult & { args?: LocalToolArgs; durationMs?: number })
+  | { name: string; text: string; args?: LocalToolArgs; durationMs?: number }
   | { name: string; error: string; args?: LocalToolArgs; durationMs?: number };
+
+type ToolCallResult = LocalToolResult | { name: string; text: string } | { name: string; error: string };
 
 export function resolveGeminiApiKey(config: AppConfig): string {
   const key =
@@ -79,7 +84,7 @@ export async function generateWithGemini(
   context.prompt = prompt;
   const contents = buildContents(prompt, context);
   for (let step = 0; step < 3; step += 1) {
-    const assistant = await callGemini(config, contents, true);
+    const assistant = await callGemini(config, contents, true, context.mcp);
     contents.push(assistant);
     const toolCalls = extractFunctionCalls(assistant);
     if (!toolCalls.length) {
@@ -113,7 +118,7 @@ export async function generateWithGemini(
     });
   }
 
-  const final = await callGemini(config, contents, false);
+  const final = await callGemini(config, contents, false, context.mcp);
   const content = extractText(final).trim();
   if (content) {
     return content;
@@ -130,13 +135,14 @@ export async function generateWithGemini(
 async function callGemini(
   config: AppConfig,
   contents: GeminiContent[],
-  includeTools: boolean
+  includeTools: boolean,
+  mcp?: McpManager
 ): Promise<GeminiContent> {
   const apiKey = resolveGeminiApiKey(config);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90000);
   const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: readSystemPrompt() }] },
+    systemInstruction: { parts: [{ text: readSystemPrompt(mcp) }] },
     contents,
     generationConfig: {
       temperature: 0.4,
@@ -145,7 +151,11 @@ async function callGemini(
     }
   };
   if (includeTools) {
-    body.tools = [{ functionDeclarations: FUNCTION_DECLARATIONS }];
+    const mcpDeclarations = mcp?.listToolDeclarations() ?? [];
+    const functionDeclarations = mcpDeclarations.length
+      ? [...FUNCTION_DECLARATIONS, ...mcpDeclarations]
+      : FUNCTION_DECLARATIONS;
+    body.tools = [{ functionDeclarations }];
   }
 
   const url = `${geminiBaseUrl(config)}/models/${encodeURIComponent(config.gemini.model)}:generateContent`;
@@ -192,8 +202,23 @@ function thinkingConfig(model: string, think: GeminiThinkLevel | undefined): Rec
   return { thinkingConfig: { thinkingBudget: budget[key] ?? 0 } };
 }
 
-function readSystemPrompt(): string {
-  return [fs.readFileSync(systemPromptPath, "utf-8").trim(), buildDynamicSkillPrompt()].filter(Boolean).join("\n\n");
+function readSystemPrompt(mcp?: McpManager): string {
+  return [fs.readFileSync(systemPromptPath, "utf-8").trim(), buildDynamicSkillPrompt(), buildMcpPrompt(mcp)]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function buildMcpPrompt(mcp?: McpManager): string {
+  const declarations = mcp?.listToolDeclarations() ?? [];
+  if (!declarations.length) {
+    return "";
+  }
+  const lines = [
+    "Connected Model Context Protocol (MCP) tools are available as callable functions:",
+    ...declarations.map((declaration) => `- ${declaration.name}: ${declaration.description ?? "MCP tool."}`),
+    "Call these functions by name with JSON arguments matching their parameters when the user's request maps to one."
+  ];
+  return lines.join("\n");
 }
 
 function buildContents(prompt: string, context: GeminiContext): GeminiContent[] {
@@ -242,7 +267,7 @@ function extractText(content: GeminiContent): string {
     .join(" ");
 }
 
-function toResponseObject(result: LocalToolResult | { name: string; error: string }): Record<string, unknown> {
+function toResponseObject(result: ToolCallResult): Record<string, unknown> {
   return result as unknown as Record<string, unknown>;
 }
 
@@ -445,7 +470,7 @@ const FUNCTION_DECLARATIONS = [
 
 type ToolCallOutcome = {
   call: GeminiFunctionCall;
-  result: LocalToolResult | { name: string; error: string };
+  result: ToolCallResult;
 };
 
 async function executeToolCall(
@@ -454,6 +479,10 @@ async function executeToolCall(
   config: AppConfig,
   allowSubAgent: boolean
 ): Promise<ToolCallOutcome> {
+  if (context.mcp?.isMcpTool(call.name)) {
+    return executeMcpToolCall(call, context);
+  }
+
   const toolName = normalizeToolName(call.name);
   if (!toolName) {
     const payload = { name: String(call.name ?? "unknown"), error: "Unknown tool requested." };
@@ -489,6 +518,32 @@ async function executeToolCall(
   }
 }
 
+async function executeMcpToolCall(call: GeminiFunctionCall, context: GeminiContext): Promise<ToolCallOutcome> {
+  const name = String(call.name ?? "mcp_tool");
+  const args = parseToolArgs(call.args) as Record<string, unknown>;
+  const startedAt = Date.now();
+  context.onToolEvent?.("start", { name, args: args as LocalToolArgs, text: "MCP tool started" });
+  try {
+    const result = await context.mcp!.callTool(name, args);
+    if (result.isError) {
+      const payload = { name, error: result.text, args: args as LocalToolArgs, durationMs: Date.now() - startedAt };
+      context.onToolEvent?.("error", payload);
+      return { call, result: { name, error: result.text } };
+    }
+    context.onToolEvent?.("end", {
+      name,
+      text: result.text,
+      args: args as LocalToolArgs,
+      durationMs: Date.now() - startedAt
+    });
+    return { call, result: { name, text: result.text } };
+  } catch (error) {
+    const payload = { name, error: String(error), args: args as LocalToolArgs, durationMs: Date.now() - startedAt };
+    context.onToolEvent?.("error", payload);
+    return { call, result: { name, error: String(error) } };
+  }
+}
+
 function resolveToolArgs(
   toolName: LocalToolName | "sub_agent",
   args: LocalToolArgs,
@@ -508,7 +563,7 @@ async function runSubAgent(task: string, config: AppConfig, context: GeminiConte
     { role: "user", parts: [{ text: `Task: ${task}` }] }
   ];
   for (let step = 0; step < 4; step += 1) {
-    const assistant = await callGemini(config, contents, true);
+    const assistant = await callGemini(config, contents, true, context.mcp);
     contents.push(assistant);
     const toolCalls = extractFunctionCalls(assistant).filter((call) => call.name !== "run_sub_agent");
     if (!toolCalls.length) {
@@ -528,7 +583,7 @@ async function runSubAgent(task: string, config: AppConfig, context: GeminiConte
       }))
     });
   }
-  const final = await callGemini(config, contents, false);
+  const final = await callGemini(config, contents, false, context.mcp);
   return { name: "sub_agent", text: extractText(final).trim() || "Sub-agent finished its tool loop." };
 }
 

@@ -14,7 +14,7 @@
     "chunk": 1280,
     "rate": 16000,
     "channels": 1,
-    "wakeWord": "pythos",
+    "wakeWord": "mark",
     "wakeThreshold": 0.25,
     "asrTimeoutSeconds": 10,
     "silenceTimeoutSeconds": 3,
@@ -51,6 +51,18 @@
     ],
     "cwd": ".",
     "enabled": true
+  },
+  "mcp": {
+    "enabled": false,
+    "servers": [
+      {
+        "name": "filesystem",
+        "enabled": false,
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      }
+    ]
   },
   "gui": {
     "visualizer": "orb",

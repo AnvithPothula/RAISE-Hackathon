@@ -38,6 +38,44 @@ Add-Content .env "GEMINI_API_KEY=your_key_here"
 
 The same `GEMINI_API_KEY` is used by both the direct Gemini client and the Pi bridge.
 
+## MCP tool support
+
+Pythos can connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers and
+expose their tools to the Gemini assistant automatically. Configure servers under the `mcp` key in
+`config.json`:
+
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "servers": [
+      {
+        "name": "filesystem",
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      },
+      {
+        "name": "docs",
+        "transport": "http",
+        "url": "https://example.com/mcp",
+        "headers": { "Authorization": "Bearer <token>" }
+      }
+    ]
+  }
+}
+```
+
+- `enabled` (top-level) turns the whole MCP subsystem on or off.
+- Each server needs a unique `name`; it namespaces the tools as `mcp_<server>_<tool>`.
+- `transport` is `stdio` (spawns `command`/`args`, optional `env`/`cwd`) or `http` (streamable HTTP `url`, optional `headers`).
+- Individual servers can be disabled with `"enabled": false`.
+
+On startup (and after saving settings) Pythos connects to each enabled server, discovers its tools, and
+adds them to Gemini's function-calling toolset. Connection state is available in the main process via the
+`mcp:getStatus` IPC channel and `mcp:status` events. Servers that fail to connect are skipped and logged
+without blocking the rest of the app.
+
 ## Run
 
 ```powershell

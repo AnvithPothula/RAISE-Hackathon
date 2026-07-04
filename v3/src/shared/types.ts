@@ -41,6 +41,49 @@ export type ConversationItem = {
 
 export type GeminiThinkLevel = "low" | "medium" | "high" | null;
 
+export type McpTransportKind = "stdio" | "http";
+
+export type McpServerConfig = {
+  /** Unique, stable identifier used to namespace this server's tools. */
+  name: string;
+  /** When false, the server is skipped at startup. Defaults to true. */
+  enabled?: boolean;
+  /** Transport used to reach the server. Defaults to "stdio". */
+  transport?: McpTransportKind;
+  /** stdio: executable to launch (e.g. "npx", "node", "python"). */
+  command?: string;
+  /** stdio: arguments passed to the command. */
+  args?: string[];
+  /** stdio: extra environment variables for the spawned server. */
+  env?: Record<string, string>;
+  /** stdio: working directory for the spawned server. */
+  cwd?: string;
+  /** http: base URL of a streamable HTTP MCP server. */
+  url?: string;
+  /** http: extra HTTP headers (e.g. Authorization) sent to the server. */
+  headers?: Record<string, string>;
+};
+
+export type McpConfig = {
+  enabled: boolean;
+  servers: McpServerConfig[];
+};
+
+export type McpServerStatus = {
+  name: string;
+  enabled: boolean;
+  transport: McpTransportKind;
+  connected: boolean;
+  toolCount: number;
+  tools: string[];
+  error: string | null;
+};
+
+export type McpStatus = {
+  enabled: boolean;
+  servers: McpServerStatus[];
+};
+
 export type AppConfig = {
   python?: { workerModule: string; lowResourceMode: boolean };
   models?: Record<string, string>;
@@ -48,5 +91,6 @@ export type AppConfig = {
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
   gemini: { model: string; baseUrl?: string; apiKey?: string; think?: GeminiThinkLevel };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
+  mcp?: McpConfig;
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };
 };
