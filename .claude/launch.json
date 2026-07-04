@@ -4,8 +4,9 @@
     {
       "name": "renderer",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-lc", "cd v3 && npx vite --host 127.0.0.1 --port 5173"],
-      "port": 5173
+      "runtimeArgs": ["-lc", "cd v3 && npx vite --host 127.0.0.1 --port ${PORT:-5173} --strictPort false"],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
