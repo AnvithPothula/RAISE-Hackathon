@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
 import type { UserMemoryService } from "./userMemory.js";
 
@@ -293,37 +294,21 @@ export async function runLocalTool(
   return null;
 }
 
-export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | null {
+export function resolveDirectLocalTool(
+  prompt: string,
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+): LocalToolInvocation | null {
+  const decision = routeUserIntent(prompt, context);
+  if (decision.invocation) {
+    return decision.invocation;
+  }
+
   const cleanPrompt = cleanDirectPrompt(prompt);
-  const normalizedPrompt = cleanPrompt.toLowerCase();
-
-  // "What can you do?" and help queries — instant, no model round-trip.
-  if (
-    /^(?:so\s+)?(?:what|which)\s+(?:can|could|do)\s+you\s+(?:do|help|assist)/i.test(cleanPrompt) ||
-    /^what\s+are\s+you\s+(?:capable|able)\b/i.test(cleanPrompt) ||
-    /^(?:what\s+can\s+i\s+(?:ask|say)|list\s+(?:your\s+)?(?:commands|capabilities|features))/i.test(cleanPrompt)
-  ) {
-    return { name: "capabilities", args: {} };
-  }
-
-  // Screen understanding — route straight to the local Gemma vision tool so it is
-  // a single on-device vision call instead of an extra model tool-selection round.
-  if (
-    /\b(on|reading|read|see|look at|analyz|describe|what'?s on)\b.*\b(screen|display|monitor)\b/i.test(
-      normalizedPrompt
-    ) ||
-    /\b(screen|display|monitor)\b.*\b(say|show|about|content|showing)\b/i.test(normalizedPrompt) ||
-    /^what am i (?:looking at|seeing)\b/i.test(normalizedPrompt)
-  ) {
-    return { name: "screen", args: { query: cleanPrompt } };
-  }
-
   const spotifyInvocation = resolveDirectSpotifyTool(cleanPrompt);
   if (spotifyInvocation) {
     return spotifyInvocation;
   }
 
-  // "Play something relaxing", "play some jazz", "play <song>" → Spotify playback.
   const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
   if (playMatch) {
     const query = playMatch[1].replace(/\b(on|in|through|via)\s+spotify\b/i, "").replace(/\s+for me$/i, "").trim();
@@ -332,42 +317,18 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
     }
   }
 
-  const weatherInvocation = resolveDirectWeatherTool(cleanPrompt);
-  if (weatherInvocation) {
-    return weatherInvocation;
-  }
-
-  const timeInvocation = resolveDirectTimeTool(cleanPrompt);
-  if (timeInvocation) {
-    return timeInvocation;
-  }
-
-  const match = cleanPrompt.match(
-    /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
-  );
-  if (!match) {
-    return null;
-  }
-
-  const target = stripOpenIntentWords(match[1]);
-  if (!target) {
-    return null;
-  }
-
-  const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
-  if (isWebsiteTarget(normalized, target)) {
-    return { name: "open_website", args: { url: target } };
-  }
-  if (isDirectAppLaunchTarget(normalized, target)) {
-    return { name: "open_app", args: { app: target } };
-  }
   return null;
 }
 
 export function resolveContextualLocalTool(
   prompt: string,
-  previousToolName: LocalToolName | null | undefined
+  previousToolName: LocalToolName | null | undefined,
+  knownLocation?: string | null
 ): LocalToolInvocation | null {
+  const contextual = resolveContextualFromRouter(prompt, previousToolName, knownLocation);
+  if (contextual) {
+    return contextual;
+  }
   const cleanPrompt = cleanDirectPrompt(prompt);
   if (previousToolName === "spotify") {
     return resolveContextualSpotifyTool(cleanPrompt);

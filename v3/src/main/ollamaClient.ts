@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
+import { isToolAllowedForScope, routeUserIntent } from "./intentRouter.js";
 import {
   buildFunctionDeclarations,
   executeToolCall,
@@ -192,6 +193,12 @@ export async function generateWithOllama(
   context: ToolContext = {}
 ): Promise<string> {
   context.prompt = prompt;
+  if (!context.toolScope) {
+    context.toolScope = routeUserIntent(prompt, {
+      previousToolName: null,
+      knownLocation: context.knownLocation
+    }).llmToolScope;
+  }
   const messages = buildMessages(prompt, context);
   const tools = buildTools(context);
 
@@ -719,12 +726,17 @@ function reportStats(payload: OllamaChatResponse, model: string, think: boolean,
 }
 
 function buildTools(context: ToolContext): OllamaTool[] {
-  const declarations = [...buildFunctionDeclarations(), ...(context.mcp?.listToolDeclarations() ?? [])];
+  const scope = context.toolScope ?? "full";
+  const declarations = [
+    ...buildFunctionDeclarations(scope),
+    ...(scope === "minimal" ? [] : (context.mcp?.listToolDeclarations() ?? []))
+  ].filter((declaration) => isToolAllowedForScope(String(declaration.name), scope));
   return declarations.map((declaration) => ({ type: "function", function: declaration }));
 }
 
 function buildMessages(prompt: string, context: ToolContext): OllamaMessage[] {
-  const messages: OllamaMessage[] = [{ role: "system", content: readSystemPrompt(context.mcp) }];
+  const scope = context.toolScope ?? "full";
+  const messages: OllamaMessage[] = [{ role: "system", content: readSystemPrompt(context.mcp, scope) }];
 
   if (context.history?.length) {
     for (const turn of context.history.slice(-10)) {

@@ -9,6 +9,7 @@ import { ensureOllamaReady } from "./ollamaRuntime.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
+import { routeUserIntent } from "./intentRouter.js";
 import {
   extractUserLocation,
   resolveContextualLocalTool,
@@ -438,11 +439,14 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
 
   try {
     debug(`echo gemma response starting device=${context.deviceId} promptChars=${prompt.length}`);
+    const routing = routeUserIntent(prompt, { knownLocation });
     emitDebugEvent("gemma request", {
       turnId,
       source: "echo",
       model: resolveActiveModel(config),
-      promptChars: prompt.length
+      promptChars: prompt.length,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope
     });
     const text = sanitizeAssistantText(
       await generateWithOllama(prompt, config, {
@@ -451,6 +455,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
+        toolScope: routing.llmToolScope,
         onToolEvent: (phase, result) => {
           if (phase === "start") {
             toolUsed = true;
@@ -487,9 +492,16 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
 }
 
 async function runDirectLocalTool(prompt: string, context: { turnId: number; source: PromptSource }): Promise<string | null> {
-  const directInvocation = resolveDirectLocalTool(prompt);
+  const routing = routeUserIntent(prompt, {
+    previousToolName: lastRetryableTool?.name ?? null,
+    knownLocation
+  });
+  const directInvocation = resolveDirectLocalTool(prompt, {
+    previousToolName: lastRetryableTool?.name ?? null,
+    knownLocation
+  });
   const contextualInvocation =
-    directInvocation ?? resolveContextualLocalTool(prompt, lastRetryableTool?.name ?? null);
+    directInvocation ?? resolveContextualLocalTool(prompt, lastRetryableTool?.name ?? null, knownLocation);
   const invocation = directInvocation ?? contextualInvocation;
   const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
   if (!invocation) {
@@ -497,7 +509,9 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
       turnId: context.turnId,
       source: context.source,
       previousTool: lastRetryableTool?.name,
-      reason: "no direct or contextual local tool matched"
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope,
+      reason: routing.reason
     });
     return null;
   }
@@ -625,11 +639,14 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
   clearPendingPiFallbacks();
   try {
     debug(`gemma response starting promptChars=${prompt.length}`);
+    const routing = routeUserIntent(prompt, { knownLocation });
     emitDebugEvent("gemma request", {
       turnId,
       source: "typed",
       model: resolveActiveModel(config),
-      promptChars: prompt.length
+      promptChars: prompt.length,
+      difficulty: routing.difficulty,
+      llmToolScope: routing.llmToolScope
     });
     broadcast("assistant:state", "thinking");
     const text = sanitizeAssistantText(
@@ -639,6 +656,7 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
+        toolScope: routing.llmToolScope,
         onToolEvent: (phase, result) =>
           broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "typed", turnId }),
         onModelStats: broadcastModelStats
