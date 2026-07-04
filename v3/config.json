@@ -27,6 +27,11 @@
     "think": "auto",
     "thinkLevel": "low"
   },
+  "openrouter": {
+    "enabled": false,
+    "model": "google/gemma-4-31b-it:free",
+    "baseUrl": "https://openrouter.ai/api/v1"
+  },
   "gradium": {
     "baseWsUrl": "wss://api.gradium.ai/api",
     "ttsVoiceId": "YTpq7expH9539ERJ",

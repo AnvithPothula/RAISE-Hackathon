@@ -110,6 +110,13 @@ export type AppConfig = {
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
   ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode; thinkLevel?: ThinkLevel };
+  openrouter?: {
+    enabled?: boolean;
+    model?: string;
+    baseUrl?: string;
+    /** Stored in per-user settings only — never commit this to config.json. */
+    apiKey?: string;
+  };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };

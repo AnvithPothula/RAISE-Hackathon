@@ -53,6 +53,19 @@ notice; only spoken voice is unavailable.
 
 
 ----------------------------------------------------------------------
+ OPTIONAL: cloud Gemma via OpenRouter
+----------------------------------------------------------------------
+
+  OPENROUTER_API_KEY  -> Your personal key from https://openrouter.ai/keys
+  OPENROUTER_MODEL    -> default google/gemma-4-31b-it:free
+
+Enable in Settings → General → LLM provider → OpenRouter, then paste your
+API key. The key is stored in your local user-settings file (never in git).
+You can also set OPENROUTER_API_KEY in .env. When OpenRouter is enabled,
+typed chat and tool loops use the cloud model instead of local Ollama.
+
+
+----------------------------------------------------------------------
  OPTIONAL: other integrations
 ----------------------------------------------------------------------
 

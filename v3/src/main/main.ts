@@ -13,6 +13,7 @@ import {
 import { readConfig, writeConfig } from "./config.js";
 import { generateWithOllama, analyzeImageWithOllama, resolveActiveModel } from "./ollamaClient.js";
 import { ensureOllamaReady } from "./ollamaRuntime.js";
+import { useOpenRouter } from "./openRouterClient.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
@@ -695,6 +696,12 @@ function finishAssistantTurn(text: string, source: string, _turnId: number, opti
 }
 
 function gemmaUnavailableMessage(error: unknown, includePi = false): string {
+  if (useOpenRouter(config)) {
+    const prefix = includePi
+      ? "I could not reach Pi or OpenRouter."
+      : "I could not reach OpenRouter.";
+    return `${prefix} Check your API key in Settings and try again. ${String(error)}`;
+  }
   const prefix = includePi
     ? "I could not reach Pi or the local Gemma model."
     : "I could not reach the local Gemma model.";

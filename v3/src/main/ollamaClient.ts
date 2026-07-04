@@ -3,6 +3,12 @@ import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
 import { isToolAllowedForScope, multiPartAnswerNudge, promptNeedsMultiToolLoop, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
 import { runNamedLocalTool } from "./localTools.js";
 import {
+  openRouterChat,
+  resolveOpenRouterModel,
+  useOpenRouter,
+  type OpenRouterChatMessage
+} from "./openRouterClient.js";
+import {
   buildFunctionDeclarations,
   executeToolCall,
   type ToolContext,
@@ -42,6 +48,9 @@ export function resolveOllamaModel(config?: AppConfig): string {
 
 /** The Gemma model that will actually serve requests for this config (honors low-resource mode). */
 export function resolveActiveModel(config?: AppConfig): string {
+  if (useOpenRouter(config)) {
+    return resolveOpenRouterModel(config);
+  }
   return installedModelOverride ?? resolveOllamaModel(config);
 }
 
@@ -93,7 +102,8 @@ export async function resolveInstalledOllamaModel(config?: AppConfig): Promise<s
 }
 
 type OllamaToolCall = {
-  function?: { name?: string; arguments?: Record<string, unknown> };
+  id?: string;
+  function?: { name?: string; arguments?: Record<string, unknown> | string };
 };
 
 type OllamaMessage = {
@@ -101,6 +111,7 @@ type OllamaMessage = {
   content: string;
   tool_calls?: OllamaToolCall[];
   tool_name?: string;
+  tool_call_id?: string;
 };
 
 type OllamaTool = { type: "function"; function: unknown };
@@ -262,17 +273,11 @@ export async function generateWithOllama(
     const outcomes = await Promise.all(
       toolCalls.slice(0, 6).map((toolCall) => runToolCall(toOutcomeCall(toolCall), config, context))
     );
-    for (const outcome of outcomes) {
-      messages.push({
-        role: "tool",
-        tool_name: outcome.call.name ?? "tool",
-        content: JSON.stringify(outcome.result)
-      });
-    }
+    pushToolOutcomes(messages, toolCalls, outcomes);
   }
 
   const final = await chat(messages, undefined, config, { think: false, context });
-  const finalContent = cleanText(final.content) || "I did not get a response from the local model.";
+  const finalContent = cleanText(final.content) || brainUnavailableFallback(config);
   const verifiedFinal = await verifyOpenAppResponse(prompt, finalContent, context);
   return verifiedFinal ?? finalContent;
 }
@@ -320,13 +325,7 @@ async function runLocalSubAgent(task: string, config: AppConfig, context: ToolCo
     const outcomes = await Promise.all(
       toolCalls.slice(0, 4).map((toolCall) => executeToolCall(toOutcomeCall(toolCall), context))
     );
-    for (const outcome of outcomes) {
-      messages.push({
-        role: "tool",
-        tool_name: outcome.call.name ?? "tool",
-        content: JSON.stringify(outcome.result)
-      });
-    }
+    pushToolOutcomes(messages, toolCalls, outcomes);
   }
 
   const final = await chat(messages, undefined, config, { context });
@@ -453,13 +452,7 @@ async function runDeepResearch(task: string, config: AppConfig, context: ToolCon
     const outcomes = await Promise.all(
       toolCalls.slice(0, 4).map((toolCall) => executeToolCall(toOutcomeCall(toolCall), context))
     );
-    for (const outcome of outcomes) {
-      messages.push({
-        role: "tool",
-        tool_name: outcome.call.name ?? "tool",
-        content: JSON.stringify(outcome.result)
-      });
-    }
+    pushToolOutcomes(messages, toolCalls, outcomes);
     // Explicit reflection: the model itself decides whether to loop again.
     messages.push({
       role: "user",
@@ -687,6 +680,13 @@ async function chat(
   config?: AppConfig,
   opts: ChatOptions = {}
 ): Promise<{ content?: string; tool_calls?: OllamaToolCall[] }> {
+  if (useOpenRouter(config)) {
+    return openRouterChat(messages as OpenRouterChatMessage[], tools, config, {
+      thinkReason: opts.thinkReason,
+      context: opts.context
+    });
+  }
+
   const url = resolveOllamaUrl(config);
   const model = await resolveInstalledOllamaModel(config);
   const think = opts.think ?? false;
@@ -810,8 +810,36 @@ function buildMessages(prompt: string, context: ToolContext): OllamaMessage[] {
   return messages;
 }
 
+function pushToolOutcomes(messages: OllamaMessage[], toolCalls: OllamaToolCall[], outcomes: Array<{ call: ToolFunctionCall; result: unknown }>): void {
+  for (let index = 0; index < outcomes.length; index += 1) {
+    const outcome = outcomes[index];
+    const sourceCall = toolCalls[index];
+    messages.push({
+      role: "tool",
+      tool_name: outcome.call.name ?? "tool",
+      tool_call_id: sourceCall?.id ?? outcome.call.name ?? "tool",
+      content: JSON.stringify(outcome.result)
+    });
+  }
+}
+
 function toOutcomeCall(toolCall: OllamaToolCall): ToolFunctionCall {
-  return { name: toolCall.function?.name, args: toolCall.function?.arguments ?? {} };
+  let args = toolCall.function?.arguments ?? {};
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args) as Record<string, unknown>;
+    } catch {
+      args = {};
+    }
+  }
+  return { name: toolCall.function?.name, args };
+}
+
+function brainUnavailableFallback(config?: AppConfig): string {
+  if (useOpenRouter(config)) {
+    return "I did not get a response from OpenRouter.";
+  }
+  return "I did not get a response from the local model.";
 }
 
 function collectToolsUsed(messages: OllamaMessage[]): string[] {

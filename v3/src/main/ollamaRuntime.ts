@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../shared/types.js";
 import { isOllamaReady, resolveInstalledOllamaModel, resolveOllamaModel, warmUpModel } from "./ollamaClient.js";
+import { ensureOpenRouterReady, useOpenRouter } from "./openRouterClient.js";
 
 const STARTUP_WAIT_MS = 45000;
 const POLL_MS = 500;
@@ -31,6 +32,10 @@ export type OllamaEnsureResult = {
  * launches if Ollama is missing; the user gets a clear error on first prompt.
  */
 export async function ensureOllamaReady(config: AppConfig): Promise<OllamaEnsureResult> {
+  if (useOpenRouter(config)) {
+    return ensureOpenRouterReady(config);
+  }
+
   const model = await resolveInstalledOllamaModel(config);
   if (await isOllamaReady(config)) {
     // Preload weights in the background so the first prompt isn't a cold start.

@@ -942,7 +942,32 @@ function SettingsModal({
           <div className="settings-grid single-col">
             <Setting label="Assistant state" value={state} />
             <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-            <Setting label="Brain" value={`Gemma · ${activeModel(settingsDraft)} (local)`} />
+            <Setting label="Brain" value={brainSummary(settingsDraft)} />
+            <SettingSelect
+              label="LLM provider"
+              value={settingsDraft?.openrouter?.enabled ? "openrouter" : "ollama"}
+              options={[
+                { label: "Local Ollama (on-device)", value: "ollama" },
+                { label: "OpenRouter (cloud Gemma 4 31B free)", value: "openrouter" }
+              ]}
+              onChange={(value) => updateDraft(onDraftChange, ["openrouter", "enabled"], value === "openrouter")}
+            />
+            {settingsDraft?.openrouter?.enabled ? (
+              <>
+                <SettingInput
+                  label="OpenRouter API key"
+                  value={settingsDraft?.openrouter?.apiKey ?? ""}
+                  type="password"
+                  hint="Stored locally on this device. Get a key at openrouter.ai/keys"
+                  onChange={(value) => updateDraft(onDraftChange, ["openrouter", "apiKey"], value)}
+                />
+                <SettingInput
+                  label="OpenRouter model"
+                  value={settingsDraft?.openrouter?.model ?? "google/gemma-4-31b-it:free"}
+                  onChange={(value) => updateDraft(onDraftChange, ["openrouter", "model"], value)}
+                />
+              </>
+            ) : null}
             <SettingSelect
               label="Adaptive thinking"
               value={settingsDraft?.ollama?.think ?? "auto"}
@@ -1226,11 +1251,24 @@ function voiceButtonClass(action: VoiceAction, active: boolean, pending: VoiceAc
   return classes.join(" ");
 }
 
-function SettingInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function SettingInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+  hint
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  hint?: string;
+}) {
   return (
     <label className="setting-row editable">
       <span>{label}</span>
-      <input value={value} onChange={(event) => onChange(event.target.value)} />
+      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      {hint ? <span className="setting-hint">{hint}</span> : null}
     </label>
   );
 }
@@ -1542,18 +1580,33 @@ function fullEventPayload(payload: unknown): string {
   }
 }
 
-/** The Gemma model actually serving requests, honoring low-resource mode. */
+/** The Gemma model actually serving requests, honoring provider and low-resource mode. */
 function activeModel(config: AppConfig | null | undefined): string {
+  if (config?.openrouter?.enabled) {
+    return config.openrouter.model ?? "google/gemma-4-31b-it:free";
+  }
   if (config?.python?.lowResourceMode && config.ollama?.lowResourceModel) {
     return config.ollama.lowResourceModel;
   }
   return config?.ollama?.model ?? "gemma4:12b";
 }
 
+function brainSummary(config: AppConfig | null | undefined): string {
+  const model = activeModel(config);
+  if (config?.openrouter?.enabled) {
+    return `Gemma · ${model} (OpenRouter)`;
+  }
+  return `Gemma · ${model} (local)`;
+}
+
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
   const model = activeModel(config);
+  if (config.openrouter?.enabled) {
+    if (config.pi?.enabled && status?.available) return `OpenRouter ${model} + Pi tools`;
+    return `OpenRouter ${model}`;
+  }
   if (config.pi?.enabled && status?.available) return `Gemma ${model} + Pi tools`;
-  return `Gemma ${model}`;
+  return `Gemma ${model} (local)`;
 }
 
 function formatPiStatus(status: PiStatus | null): string {
