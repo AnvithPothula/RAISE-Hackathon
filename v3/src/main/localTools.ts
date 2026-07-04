@@ -37,6 +37,8 @@ export type LocalToolResult = {
   fetchedAt?: string;
   path?: string;
   results?: WebSearchResult[];
+  /** Present on open_app when launch verification failed. */
+  opened?: boolean;
 };
 
 export type AppOpenOutcome = {
@@ -286,6 +288,14 @@ const WEBSITE_ALIASES: Record<string, string> = {
 export function websiteAliasForName(name: string): string | null {
   const normalized = String(name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
   return WEBSITE_ALIASES[normalized] ?? null;
+}
+
+export function isOpenAppFailure(result: LocalToolResult): boolean {
+  return result.name === "open_app" && result.opened === false;
+}
+
+export function openAppFailureMessage(result: LocalToolResult): string {
+  return result.text || "I couldn't open that application.";
 }
 
 export function extractUserLocation(prompt: string): string | null {
@@ -965,10 +975,13 @@ async function openApp(appName: string, services: LocalToolServices): Promise<Lo
     if (fallbackSite && services.openWebsite) {
       return openWebsite(fallbackSite, services);
     }
-    throw new Error(outcome.detail || `Could not confirm ${app} actually opened.`);
+    return {
+      name: "open_app",
+      opened: false,
+      text: outcome.detail || `I couldn't find ${app} on this computer. Check the name or install it first.`
+    };
   }
-  }
-  return { name: "open_app", text: outcome.detail ?? `Opened ${app}.` };
+  return { name: "open_app", opened: true, text: outcome?.detail ?? `Opened ${app}.` };
 }
 
 async function openWebsite(value: string, services: LocalToolServices): Promise<LocalToolResult> {

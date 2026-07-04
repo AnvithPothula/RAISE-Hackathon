@@ -37,7 +37,7 @@ function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
       if (!installed) {
         resolve({
           opened: false,
-          detail: `I couldn't find ${target} on your Mac. Check the name or install it first.`
+          detail: appNotFoundMessage(target, "Mac")
         });
         return;
       }
@@ -48,7 +48,7 @@ function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
         stderr += chunk.toString("utf-8");
       });
       child.on("error", (error) => {
-        resolve({ opened: false, detail: `Could not open ${target}: ${error.message}` });
+        resolve({ opened: false, detail: appNotFoundMessage(target, "Mac", error.message) });
       });
       child.on("exit", (code) => {
         if (code === 0) {
@@ -59,8 +59,8 @@ function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
         resolve({
           opened: false,
           detail: reason.includes("Unable to find application")
-            ? `I couldn't find ${target} on your Mac. Check the name or install it first.`
-            : reason || `Could not open ${target}.`
+            ? appNotFoundMessage(target, "Mac")
+            : reason || appNotFoundMessage(target, "Mac")
         });
       });
     })();
@@ -73,7 +73,7 @@ function openLocalAppOnLinux(target: string): Promise<AppOpenOutcome> {
     child.on("error", () => {
       const fallback = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
       fallback.on("error", () => {
-        resolve({ opened: false, detail: `I couldn't find or launch ${target} on this system.` });
+        resolve({ opened: false, detail: appNotFoundMessage(target, "Linux") });
       });
       fallback.on("spawn", () => {
         fallback.unref();
@@ -86,8 +86,24 @@ function openLocalAppOnLinux(target: string): Promise<AppOpenOutcome> {
     });
   });
 }
-    });
-  });
+
+function appNotFoundMessage(target: string, platform: "Mac" | "Windows" | "Linux", reason?: string): string {
+  const normalized = String(reason ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (
+    normalized.includes("cannot find the file") ||
+    normalized.includes("unable to find application") ||
+    normalized.includes("not found") ||
+    normalized.includes("does not exist")
+  ) {
+    return `I couldn't find ${target} on your ${platform} computer. Check the name or install it first.`;
+  }
+  if (reason?.trim()) {
+    return `I couldn't open ${target} on your ${platform} computer: ${reason.trim()}`;
+  }
+  return `I couldn't find ${target} on your ${platform} computer. Check the name or install it first.`;
 }
 
 function openLocalAppOnWindows(target: string): Promise<AppOpenOutcome> {
@@ -95,8 +111,26 @@ function openLocalAppOnWindows(target: string): Promise<AppOpenOutcome> {
     const escaped = target.replace(/'/g, "''");
     const script = [
       "$ErrorActionPreference = 'Stop'",
+      `$target = '${escaped}'`,
+      "function Resolve-StartApp {",
+      "  param([string]$Name)",
+      "  $apps = @(Get-StartApps)",
+      "  $exact = $apps | Where-Object { $_.Name -eq $Name } | Select-Object -First 1",
+      "  if ($exact) { return $exact }",
+      "  $ci = $apps | Where-Object { $_.Name -ieq $Name } | Select-Object -First 1",
+      "  if ($ci) { return $ci }",
+      "  return $apps | Where-Object { $_.Name -like \"*$Name*\" } | Sort-Object { $_.Name.Length } | Select-Object -First 1",
+      "}",
+      "if ($target -notmatch '\\.exe$') {",
+      "  $startApp = Resolve-StartApp $target",
+      "  if ($startApp) {",
+      "    Start-Process explorer.exe \"shell:AppsFolder\\$($startApp.AppID)\" | Out-Null",
+      "    Write-Output ('OK:' + $startApp.Name)",
+      "    exit 0",
+      "  }",
+      "}",
       "try {",
-      `  $proc = Start-Process -FilePath '${escaped}' -PassThru`,
+      "  $proc = Start-Process -FilePath $target -PassThru",
       "} catch {",
       "  Write-Output ('FAIL:' + $_.Exception.Message)",
       "  exit 0",
@@ -134,15 +168,16 @@ function openLocalAppOnWindows(target: string): Promise<AppOpenOutcome> {
       }
       if (output.startsWith("FAIL:")) {
         const reason = output.slice(5).trim();
-        resolve({
-          opened: false,
-          detail: `${target} is unavailable on this device. ${reason || "App not found."}`
-        });
+        resolve({ opened: false, detail: appNotFoundMessage(target, "Windows", reason) });
+        return;
+      }
+      if (!output && !target.match(/\.exe$/i)) {
+        resolve({ opened: false, detail: appNotFoundMessage(target, "Windows") });
         return;
       }
       resolve({
         opened: false,
-        detail: `I couldn't confirm ${target} opened${stderr.trim() ? `: ${stderr.trim()}` : "."}`
+        detail: appNotFoundMessage(target, "Windows", stderr.trim() || undefined)
       });
     });
   });

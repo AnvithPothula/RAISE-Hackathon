@@ -5,6 +5,8 @@ import { appRoot } from "./config.js";
 import {
   extractLocationFromPrompt,
   isCursorAgentAvailable,
+  isOpenAppFailure,
+  openAppFailureMessage,
   type LocalToolArgs,
   runNamedLocalTool,
   type LocalToolName,
@@ -123,7 +125,8 @@ export const FUNCTION_DECLARATIONS = [
   },
   {
     name: "open_app",
-    description: "Open a local desktop app by name, such as notepad, calculator, chrome, spotify, or explorer.",
+    description:
+      "Open a local desktop app by name, such as notepad, calculator, chrome, spotify, or explorer. Returns an error if the app cannot be found or launched.",
     parameters: {
       type: "object",
       properties: {
@@ -405,6 +408,16 @@ export async function executeToolCall(call: ToolFunctionCall, context: ToolConte
       text: toolName === "web_search" && args.query ? `Searching: ${args.query}` : "Tool started"
     } as LocalToolResult & { args: LocalToolArgs });
     const result = await runNamedLocalTool(toolName, args, context.knownLocation ?? null, context.localToolServices);
+    if (isOpenAppFailure(result)) {
+      const payload = {
+        name: toolName,
+        error: openAppFailureMessage(result),
+        opened: false,
+        durationMs: Date.now() - startedAt
+      };
+      context.onToolEvent?.("error", { ...result, args, ...payload });
+      return { call, result: payload };
+    }
     context.onToolEvent?.("end", { ...result, args, durationMs: Date.now() - startedAt });
     return { call, result };
   } catch (error) {

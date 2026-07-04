@@ -118,6 +118,19 @@ describe("runNamedLocalTool", () => {
     expect(opened).toEqual(["paint"]);
   });
 
+  it("returns a failure result when the app opener reports the app was not found", async () => {
+    const result = await runNamedLocalTool("open_app", { app: "NonexistentAppXYZ" }, null, {
+      openApp: async () => ({
+        opened: false,
+        detail: "I couldn't find NonexistentAppXYZ on your Mac computer. Check the name or install it first."
+      })
+    });
+
+    expect(result.name).toBe("open_app");
+    expect(result.opened).toBe(false);
+    expect(result.text).toContain("couldn't find NonexistentAppXYZ");
+  });
+
   it("uses injected web search service", async () => {
     const result = await runNamedLocalTool("web_search", { query: "pythos" }, null, {
       webSearch: async (query) => ({

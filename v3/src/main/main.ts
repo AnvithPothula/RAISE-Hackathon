@@ -19,6 +19,8 @@ import { McpManager } from "./mcpManager.js";
 import { routeUserIntent } from "./intentRouter.js";
 import {
   extractUserLocation,
+  isOpenAppFailure,
+  openAppFailureMessage,
   resolveContextualLocalTool,
   resolveDirectLocalTool,
   runNamedLocalTool,
@@ -546,6 +548,19 @@ async function tryExecuteTextualToolResponse(
   });
   try {
     const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
+    if (isOpenAppFailure(result)) {
+      const message = openAppFailureMessage(result);
+      broadcastLocalToolEvent("error", {
+        ...result,
+        error: message,
+        args: invocation.args,
+        route: "textual-recovery",
+        source: context.source,
+        turnId: context.turnId,
+        durationMs: Date.now() - startedAt
+      });
+      return message;
+    }
     broadcastLocalToolEvent("end", {
       ...result,
       args: invocation.args,
@@ -556,7 +571,7 @@ async function tryExecuteTextualToolResponse(
     });
     return result.text;
   } catch (error) {
-    const message = `Tool failed: ${String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
     broadcastLocalToolEvent("error", {
       name: invocation.name,
       error: message,
@@ -618,6 +633,20 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
   });
   try {
     const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
+    if (isOpenAppFailure(result)) {
+      const message = openAppFailureMessage(result);
+      debug(`direct local tool failed name=${invocation.name} error=${message}`);
+      broadcastLocalToolEvent("error", {
+        ...result,
+        error: message,
+        args: invocation.args,
+        route,
+        source: context.source,
+        turnId: context.turnId,
+        durationMs: Date.now() - startedAt
+      });
+      return message;
+    }
     broadcastLocalToolEvent("end", {
       ...result,
       args: invocation.args,
@@ -706,6 +735,18 @@ async function runStoredToolRetry(): Promise<string> {
       invocation.knownLocation,
       localToolServices
     );
+    if (isOpenAppFailure(result)) {
+      const message = openAppFailureMessage(result);
+      broadcastLocalToolEvent("error", {
+        ...result,
+        error: message,
+        args: invocation.args,
+        route: "retry",
+        source: "retry",
+        durationMs: Date.now() - startedAt
+      });
+      return message;
+    }
     broadcastLocalToolEvent("end", {
       ...result,
       args: invocation.args,
@@ -715,7 +756,7 @@ async function runStoredToolRetry(): Promise<string> {
     });
     return result.text;
   } catch (error) {
-    const message = `Retry failed: ${String(error)}`;
+    const message = error instanceof Error ? error.message : `Retry failed: ${String(error)}`;
     debug(`retry tool failed name=${invocation.name} error=${String(error)}`);
     broadcastLocalToolEvent("error", {
       name: invocation.name,
