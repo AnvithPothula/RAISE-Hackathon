@@ -1,21 +1,33 @@
 {
   "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434/v1",
+    "gemini": {
+      "name": "Google AI Studio (Gemini)",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
       "api": "openai-completions",
-      "apiKey": "ollama",
-      "compat": {
-        "supportsDeveloperRole": false,
-        "supportsReasoningEffort": false
-      },
+      "apiKey": "$GEMINI_API_KEY",
+      "authHeader": true,
       "models": [
         {
-          "id": "llama3:8b",
-          "name": "Llama 3 8B Local",
-          "reasoning": false,
-          "input": ["text"],
-          "contextWindow": 8192,
-          "maxTokens": 2048,
+          "id": "gemini-2.5-flash",
+          "name": "Gemini 2.5 Flash",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 8192,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "name": "Gemini 2.5 Pro",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 8192,
           "cost": {
             "input": 0,
             "output": 0,

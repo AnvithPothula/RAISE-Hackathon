@@ -20,9 +20,9 @@
     "silenceTimeoutSeconds": 3,
     "ttsLengthScale": 1.15
   },
-  "ollama": {
-    "baseUrl": "http://localhost:11434",
-    "model": "gemma4:e2b",
+  "gemini": {
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "model": "gemini-2.5-flash",
     "think": "low"
   },
   "gradium": {
@@ -42,7 +42,7 @@
       "rpc",
       "--no-session",
       "--model",
-      "ollama/gemma4:e2b",
+      "gemini/gemini-2.5-flash",
       "--extension",
       ".pi/extensions/pythos-safe-tools.ts",
       "--skill",

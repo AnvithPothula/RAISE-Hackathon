@@ -8,7 +8,7 @@ Pythos v3 is a dev-first rebuild of v2 with a Python audio worker, Electron/Reac
 - Electron main: process supervision, typed IPC, Pi RPC bridge.
 - React renderer: modern voice orb visualizer, transcript, controls, and tool timeline.
 - Pi project hooks: safe local tools in `.pi/extensions` and skills in `.pi/skills`.
-- Models: local wake-word, Vosk, and Piper assets live in `v3/Models`; Ollama models stay in Ollama's model store.
+- Models: local wake-word, Vosk, and Piper assets live in `v3/Models`; the LLM runs on the Google AI Studio (Gemini) API.
 
 ## Setup
 
@@ -24,6 +24,19 @@ Install Pi separately if `pi` is not already on PATH:
 ```powershell
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 ```
+
+## Gemini API key
+
+Pythos uses the Google AI Studio (Gemini) API for language and vision. Create a key at
+https://aistudio.google.com/apikey, then add it to `v3/.env`:
+
+```powershell
+cd C:\Helper-Base\v3
+Copy-Item .env.example .env -Force
+Add-Content .env "GEMINI_API_KEY=your_key_here"
+```
+
+The same `GEMINI_API_KEY` is used by both the direct Gemini client and the Pi bridge.
 
 ## Run
 
@@ -86,6 +99,6 @@ Events are JSONL objects emitted to stdout:
 - `config.json` defaults to low-resource hotkey-style operation.
 - The default ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk` for better recognition tolerance. It loads slower than the small model.
 - `scripts/install-vosk-model.ps1` can reinstall the full Vosk model if it is missing. The smaller `vosk-model-small-en-us-0.15` model remains available as a faster fallback.
-- Ollama remains the only heavy LLM runtime.
-- The Pi bridge starts `pi --mode rpc --no-session --model ollama/llama3:8b`.
-- Pi custom models are included at `.pi/models.json`; `scripts/install-pi-models.ps1` copies that file to `~/.pi/agent/models.json`.
+- The Google AI Studio (Gemini) API is the LLM backend; set `GEMINI_API_KEY` in `v3/.env`.
+- The Pi bridge starts `pi --mode rpc --no-session --model gemini/gemini-2.5-flash`.
+- Pi custom models are included at `.pi/models.json` (a `gemini` provider pointing at Google's OpenAI-compatible endpoint); `scripts/install-pi-models.ps1` copies that file to `~/.pi/agent/models.json`.

@@ -429,25 +429,25 @@ export function App() {
               <Setting label="Assistant state" value={state} />
               <Setting label="Pi status" value={formatPiStatus(piStatus)} />
               <SettingInput
-                label="Ollama model"
-                value={settingsDraft?.ollama.model ?? ""}
-                onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "model"], value)}
+                label="Gemini model"
+                value={settingsDraft?.gemini.model ?? ""}
+                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "model"], value)}
               />
               <SettingInput
-                label="Ollama URL"
-                value={settingsDraft?.ollama.baseUrl ?? ""}
-                onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "baseUrl"], value)}
+                label="Gemini API endpoint"
+                value={settingsDraft?.gemini.baseUrl ?? ""}
+                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "baseUrl"], value)}
               />
               <SettingSelect
                 label="Thinking level"
-                value={settingsDraft?.ollama.think ?? "null"}
+                value={settingsDraft?.gemini.think ?? "null"}
                 options={[
-                  { label: "Off / unsupported", value: "null" },
+                  { label: "Off", value: "null" },
                   { label: "Low", value: "low" },
                   { label: "Medium", value: "medium" },
                   { label: "High", value: "high" }
                 ]}
-                onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "think"], value === "null" ? null : value)}
+                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "think"], value === "null" ? null : value)}
               />
               <SettingInput
                 label="Spotify client ID"
@@ -846,7 +846,7 @@ function summarizeEvent(payload: unknown): string {
     }
     if (typeof record.code === "number" || record.code === null) {
       if (record.code === 4294967295) {
-        return "Pi process exited. Direct Ollama fallback will handle active requests.";
+        return "Pi process exited. Direct Gemini fallback will handle active requests.";
       }
       return `Process exited with code ${String(record.code ?? "unknown")}`;
     }
@@ -873,7 +873,7 @@ function labelEvent(event: PiEvent): string {
       return "Debug";
     }
     if (type === "message_end") {
-      return event.type === "ollama-fallback" ? "Ollama Fallback" : "Assistant";
+      return event.type === "gemini-fallback" ? "Gemini Fallback" : "Assistant";
     }
     if (type === "tool_execution_start") {
       return `Tool Started - ${humanToolName(record.name)}`;
@@ -1026,9 +1026,9 @@ function fullEventPayload(payload: unknown): string {
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
   if (config.pi.enabled && status?.available) {
-    return `${config.ollama.model} direct + Pi tools`;
+    return `${config.gemini.model} direct + Pi tools`;
   }
-  return `${config.ollama.model} direct`;
+  return `${config.gemini.model} direct`;
 }
 
 function formatPiStatus(status: PiStatus | null): string {

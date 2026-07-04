@@ -8,7 +8,7 @@ Pythos v3 is a dev-first rebuild of v2 with a Python audio worker, Electron/Reac
 - Electron main: process supervision, typed IPC, Pi RPC bridge.
 - React renderer: modern voice orb visualizer, transcript, controls, and tool timeline.
 - Pi project hooks: safe local tools in `.pi/extensions` and skills in `.pi/skills`.
-- Models: local wake-word, Vosk, and Piper assets live in `v3/Models`; Ollama models stay in Ollama's model store.
+- Models: local wake-word, Vosk, and Piper assets live in `v3/Models`; the LLM runs on the Google AI Studio (Gemini) API.
 
 ## Setup
 
@@ -86,6 +86,6 @@ Events are JSONL objects emitted to stdout:
 - `config.json` defaults to low-resource hotkey-style operation.
 - The default ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk` for better recognition tolerance. It loads slower than the small model.
 - `scripts/install-vosk-model.ps1` can reinstall the full Vosk model if it is missing. The smaller `vosk-model-small-en-us-0.15` model remains available as a faster fallback.
-- Ollama remains the only heavy LLM runtime.
-- The Pi bridge starts `pi --mode rpc --no-session --model ollama/llama3:8b`.
+- The Google AI Studio (Gemini) API is the LLM backend; set `GEMINI_API_KEY` in `v3/.env`.
+- The Pi bridge starts `pi --mode rpc --no-session --model gemini/gemini-2.5-flash`.
 - Pi custom models are included at `.pi/models.json`; `scripts/install-pi-models.ps1` copies that file to `~/.pi/agent/models.json`.

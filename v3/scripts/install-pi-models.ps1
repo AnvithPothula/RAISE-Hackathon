@@ -6,4 +6,4 @@ $target = Join-Path $targetDir "models.json"
 
 New-Item -ItemType Directory -Force $targetDir | Out-Null
 Copy-Item -LiteralPath $source -Destination $target -Force
-Write-Host "Installed Pi Ollama model config to $target"
+Write-Host "Installed Pi Gemini model config to $target"
