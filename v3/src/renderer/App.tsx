@@ -92,9 +92,14 @@ export function App() {
   const [isResizing, setIsResizing] = useState(false);
 
   const toolFlashTimer = useRef<number | null>(null);
+  const assistantTurnActiveRef = useRef(false);
   const promptRef = useRef<HTMLInputElement>(null);
   const resizeStartX = useRef(0);
   const resizeStartWidth = useRef(sideWidth);
+
+  function markAssistantTurnActive(active: boolean) {
+    assistantTurnActiveRef.current = active;
+  }
 
   const statusText = useMemo(() => {
     if (state === "idle") return "Ready";
@@ -171,6 +176,7 @@ export function App() {
     setWakeSessionArmed(false);
     setPendingVoiceAction(null);
     setStreamingText(null);
+    markAssistantTurnActive(false);
     setState("idle");
   }
 
@@ -184,9 +190,11 @@ export function App() {
     setWakeSessionArmed(false);
     setPendingVoiceAction(null);
     setConversation((items) => trimItems([...items, { id: nowId(), role: "user" as const, text: prompt, timestamp: Date.now() }], config));
+    markAssistantTurnActive(true);
     setState("thinking");
     window.pythos.promptAssistant(prompt).catch((reason: unknown) => {
       setError(`Typed prompt failed: ${String(reason)}`);
+      markAssistantTurnActive(false);
       setState("error");
     });
   }
@@ -261,10 +269,19 @@ export function App() {
 
   function handleWorkerEvent(event: WorkerEvent) {
     if (event.type === "state") {
-      setState(event.payload.value);
-      if (event.payload.value !== "loading") setPendingVoiceAction(null);
-      if (event.payload.value === "idle" || event.payload.value === "error" || event.payload.value === "shutdown") {
-        setWakeSessionArmed(false);
+      const workerState = event.payload.value;
+      setState((current) => {
+        // The mic pipeline reports idle when PTT ends; don't clobber inference/TTS.
+        if (workerState === "idle" && assistantTurnActiveRef.current) {
+          return current;
+        }
+        return workerState;
+      });
+      if (workerState !== "loading") setPendingVoiceAction(null);
+      if (workerState === "idle" || workerState === "error" || workerState === "shutdown") {
+        if (!assistantTurnActiveRef.current) {
+          setWakeSessionArmed(false);
+        }
       }
       return;
     }
@@ -280,15 +297,21 @@ export function App() {
       setPendingVoiceAction(null);
       setPartial("");
       setConversation((items) => trimItems([...items, { id: nowId(), role: "user" as const, text: event.payload.text, timestamp: Date.now() }], config));
+      markAssistantTurnActive(true);
       setState("thinking");
       return;
     }
     if (event.type === "tts_started") {
+      markAssistantTurnActive(true);
       setState("speaking");
       return;
     }
     if (event.type === "tts_done") {
-      setState((current) => (current === "thinking" ? current : "idle"));
+      if (event.payload.cancelled) {
+        return;
+      }
+      markAssistantTurnActive(false);
+      setState("idle");
       return;
     }
     if (event.type === "error") {
@@ -332,6 +355,7 @@ export function App() {
         setConversation((items) => trimItems([...items, { id: nowId(), role: "tool" as const, text: formatToolConversationText(payload), timestamp: Date.now() }], config));
       }
       if (type === "turn_end") {
+        markAssistantTurnActive(false);
         setState("idle");
         setStreamingText(null);
       }
@@ -367,7 +391,15 @@ export function App() {
     const offPi = window.pythos.onPiEvent(handlePiEvent);
     const offPiStatus = window.pythos.onPiStatus((status) => setPiStatus(status));
     const offMcpStatus = window.pythos.onMcpStatus?.((status) => setMcpStatus(status)) ?? (() => {});
-    const offState = window.pythos.onAssistantState((next) => setState(next as AssistantState));
+    const offState = window.pythos.onAssistantState((next) => {
+      const assistantState = next as AssistantState;
+      if (assistantState === "thinking" || assistantState === "speaking") {
+        markAssistantTurnActive(true);
+      } else if (assistantState === "idle" || assistantState === "error" || assistantState === "shutdown") {
+        markAssistantTurnActive(false);
+      }
+      setState(assistantState);
+    });
     const offStats = window.pythos.onModelStats((stats) => setModelStats(stats));
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);

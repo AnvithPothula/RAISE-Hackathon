@@ -82,6 +82,30 @@ describe("runNamedLocalTool", () => {
     expect(opened).toEqual(expected);
   });
 
+  it("maps Paint aliases to platform handlers", async () => {
+    const opened: string[] = [];
+    await runNamedLocalTool("open_app", { app: "paint" }, null, {
+      openApp: async (target) => {
+        opened.push(target);
+      }
+    });
+
+    if (process.platform === "darwin") {
+      expect(opened).toEqual(["Preview"]);
+      return;
+    }
+    if (process.platform === "win32") {
+      await runNamedLocalTool("open_app", { app: "Microsoft Paint" }, null, {
+        openApp: async (target) => {
+          opened.push(target);
+        }
+      });
+      expect(opened).toEqual(["ms-paint:", "ms-paint:"]);
+      return;
+    }
+    expect(opened).toEqual(["paint"]);
+  });
+
   it("uses injected web search service", async () => {
     const result = await runNamedLocalTool("web_search", { query: "pythos" }, null, {
       webSearch: async (query) => ({

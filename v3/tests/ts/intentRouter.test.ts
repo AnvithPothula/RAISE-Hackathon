@@ -50,6 +50,12 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({ name: "list_folder", args: { path: "download" } });
   });
 
+  it("routes open app requests instantly", () => {
+    const decision = routeUserIntent("Open Microsoft Paint");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "open_app", args: { app: "Microsoft Paint" } });
+  });
+
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");
