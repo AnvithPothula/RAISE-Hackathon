@@ -11,8 +11,6 @@ import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
 import {
   extractUserLocation,
-  resolveContextualLocalTool,
-  resolveDirectLocalTool,
   runNamedLocalTool,
   type AppOpenOutcome,
   type LocalToolArgs,
@@ -365,20 +363,6 @@ async function handleUserPrompt(prompt: string): Promise<void> {
     return;
   }
 
-  const directToolText = await runDirectLocalTool(prompt, { turnId, source: "typed" });
-  if (directToolText !== null) {
-    if (turnId !== activeTurnId) {
-      debug(`direct tool response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale direct tool response ignored", { turnId, activeTurnId, source: "typed" });
-      return;
-    }
-    activePrompt = null;
-    rememberTurn("assistant", directToolText);
-    broadcastAssistantText(directToolText, "local-tool");
-    pythonWorker.send({ type: "speak", text: directToolText });
-    return;
-  }
-
   await respondDirect(prompt, turnId);
 }
 
@@ -415,25 +399,6 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
       args: lastRetryableTool.args
     });
     return { text: await retryLastToolForEcho(turnId), toolUsed: true };
-  }
-
-  const directToolText = await runDirectLocalTool(prompt, { turnId, source: "echo" });
-  if (directToolText !== null) {
-    if (turnId !== activeTurnId) {
-      debug(`echo direct tool response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale direct tool response ignored", { turnId, activeTurnId, source: "echo" });
-      return "I already moved on to another request.";
-    }
-    activePrompt = null;
-    rememberTurn("assistant", directToolText);
-    broadcastAssistantText(directToolText, "echo");
-    broadcast("assistant:state", "speaking");
-    setTimeout(() => {
-      if (activeTurnId === turnId) {
-        broadcast("assistant:state", "idle");
-      }
-    }, 5000);
-    return { text: directToolText, toolUsed: true };
   }
 
   try {
@@ -482,67 +447,6 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
-    return message;
-  }
-}
-
-async function runDirectLocalTool(prompt: string, context: { turnId: number; source: PromptSource }): Promise<string | null> {
-  const directInvocation = resolveDirectLocalTool(prompt);
-  const contextualInvocation =
-    directInvocation ?? resolveContextualLocalTool(prompt, lastRetryableTool?.name ?? null);
-  const invocation = directInvocation ?? contextualInvocation;
-  const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
-  if (!invocation) {
-    emitDebugEvent("route gemma", {
-      turnId: context.turnId,
-      source: context.source,
-      previousTool: lastRetryableTool?.name,
-      reason: "no direct or contextual local tool matched"
-    });
-    return null;
-  }
-
-  debug(`direct local tool match name=${invocation.name} args=${JSON.stringify(invocation.args)}`);
-  emitDebugEvent("route direct tool", {
-    turnId: context.turnId,
-    source: context.source,
-    route,
-    previousTool: lastRetryableTool?.name,
-    tool: invocation.name,
-    args: invocation.args
-  });
-  const startedAt = Date.now();
-  broadcastLocalToolEvent("start", {
-    name: invocation.name,
-    text: "Tool started",
-    args: invocation.args,
-    route,
-    source: context.source,
-    turnId: context.turnId
-  });
-  try {
-    const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
-    broadcastLocalToolEvent("end", {
-      ...result,
-      args: invocation.args,
-      route,
-      source: context.source,
-      turnId: context.turnId,
-      durationMs: Date.now() - startedAt
-    });
-    return result.text;
-  } catch (error) {
-    const message = `Tool failed: ${String(error)}`;
-    debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
-    broadcastLocalToolEvent("error", {
-      name: invocation.name,
-      error: message,
-      args: invocation.args,
-      route,
-      source: context.source,
-      turnId: context.turnId,
-      durationMs: Date.now() - startedAt
-    });
     return message;
   }
 }
