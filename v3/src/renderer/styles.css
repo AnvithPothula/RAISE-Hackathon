@@ -56,7 +56,6 @@ body,
 
 body {
   position: relative;
-  min-width: 960px;
   background:
     radial-gradient(ellipse 55% 42% at 50% 42%, rgba(110, 212, 240, 0.12), transparent 68%),
     radial-gradient(ellipse 40% 30% at 50% 48%, rgba(232, 160, 216, 0.09), transparent 62%),
