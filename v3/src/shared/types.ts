@@ -56,6 +56,8 @@ export type ModelStats = {
   totalSeconds: number;
   thinking: boolean;
   thinkReason?: string;
+  /** Intent router tool scope for this request (none/minimal/standard/full). */
+  toolScope?: string;
   at: number;
 };
 

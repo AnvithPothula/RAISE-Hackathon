@@ -543,8 +543,10 @@ function AiChamber({
 }) {
   const perfHint =
     showPerf && modelStats && modelStats.tokensPerSecond > 0
-      ? ` · ${modelStats.tokensPerSecond} tok/s`
-      : "";
+      ? ` · ${modelStats.tokensPerSecond} tok/s${modelStats.toolScope ? ` · tools:${modelStats.toolScope}` : ""}`
+      : modelStats?.toolScope
+        ? ` · tools:${modelStats.toolScope}`
+        : "";
 
   const stateLabel = useMemo(() => {
     if (state === "idle") return "Standby";

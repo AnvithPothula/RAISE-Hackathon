@@ -716,6 +716,7 @@ function reportStats(payload: OllamaChatResponse, model: string, think: boolean,
     totalSeconds: Math.round(((payload.total_duration ?? 0) / 1e9) * 100) / 100,
     thinking: think,
     thinkReason: opts.thinkReason,
+    toolScope: opts.context?.toolScope,
     at: Date.now()
   };
   try {

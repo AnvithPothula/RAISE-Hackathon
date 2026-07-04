@@ -150,6 +150,19 @@ Root of the previous regression: the app saved settings by rewriting the committ
 
 Implemented in `config.ts` (`deepMerge`/`deepDiff`, `userSettingsPath`); 4 new tests assert the delta-only write and that `config.json` is never modified. Tests: 66 pass, typecheck clean.
 
+### Fifth pass: intent routing merged + hackathon-tuned ✅
+Merged `Intent-based` into `main` and optimized for demo reliability:
+
+| Layer | Behavior |
+|-------|----------|
+| **Instant (zero LLM)** | Weather, time, math, alarms, memory, open app/site, web search, clipboard, screen vision, folder listing, Spotify play, capabilities — routed by `intentRouter.ts` before Gemma is called |
+| **`none` tool scope** | General-knowledge questions (history, definitions, chat) get **zero tools** — fastest TTFT, no tool spirals. Verified: "why do we celebrate 4th of July" → `tools:none` |
+| **`minimal` scope** | Simple operational prompts that still need inference but not heavy agents |
+| **`standard` scope** | File/folder/screen/system queries — MCP `system` tools only, no heavy agents |
+| **`full` scope** | Research, code, compare, long multi-part requests — all tools including `deep_research`, `run_code`, vision |
+
+Other fixes: contextual Spotify follow-ups no longer skipped when a direct match exists; fallback path uses intent scope; demo HUD shows `tools:none/minimal/…` beside tok/s. Tests: **77 pass**.
+
 ### P0 — Gemma on-device brain ✅
 | # | Task | Status |
 |---|------|--------|

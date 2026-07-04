@@ -4,7 +4,7 @@ import type { LocalToolInvocation, LocalToolName } from "./localTools.js";
 export type TaskDifficulty = "instant" | "simple" | "complex";
 
 /** How many tools the local model sees when a prompt still needs inference. */
-export type LlmToolScope = "minimal" | "standard" | "full";
+export type LlmToolScope = "none" | "minimal" | "standard" | "full";
 
 export type IntentRoutingContext = {
   previousToolName?: LocalToolName | null;
@@ -86,6 +86,7 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
     resolveCapabilitiesIntent(cleanPrompt) ??
     resolveClipboardIntent(cleanPrompt, normalized) ??
     resolveScreenIntent(cleanPrompt, normalized) ??
+    resolveDirectoryIntent(cleanPrompt, normalized) ??
     resolveCalculatorIntent(cleanPrompt, normalized) ??
     resolveAlarmIntent(cleanPrompt, normalized) ??
     resolveMemoryIntent(cleanPrompt, normalized) ??
@@ -93,7 +94,8 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
     resolveGoToWebsiteIntent(cleanPrompt, normalized) ??
     resolveWeatherIntent(cleanPrompt, normalized) ??
     resolveTimeIntent(cleanPrompt, normalized) ??
-    resolveOpenIntent(cleanPrompt);
+    resolveOpenIntent(cleanPrompt) ??
+    resolveSpotifyPlayIntent(cleanPrompt);
 
   if (instant) {
     return {
@@ -127,6 +129,9 @@ export function isToolAllowedForScope(toolName: string | undefined, scope: LlmTo
   if (!name) {
     return false;
   }
+  if (scope === "none") {
+    return false;
+  }
   if (scope === "full") {
     return true;
   }
@@ -158,7 +163,25 @@ function classifyLlmToolScope(cleanPrompt: string, normalized: string): LlmToolS
   if (/\b(screen|clipboard|note|file|folder|directory|system stats|battery)\b/.test(normalized)) {
     return "standard";
   }
+  if (looksLikeGeneralKnowledge(normalized)) {
+    return "none";
+  }
   return "minimal";
+}
+
+function looksLikeGeneralKnowledge(normalized: string): boolean {
+  if (
+    /\b(weather|forecast|open|launch|start|play|spotify|alarm|clipboard|screen|folder|directory|download|search|google|remember|forget|calculate|inspect|code|research|delegate|sub agent)\b/.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  return (
+    /^(?:what|why|when|where|who|how|is|are|was|were|does|do|did|can|could|would|should|tell me|explain|describe)\b/.test(
+      normalized
+    ) || normalized.endsWith("?")
+  );
 }
 
 function resolveContextualIntent(
@@ -224,6 +247,35 @@ function resolveClipboardIntent(cleanPrompt: string, normalized: string): LocalT
     return { name: "clipboard", args: {} };
   }
   return null;
+}
+
+function resolveDirectoryIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+  if (/\bweather\b/.test(normalized)) {
+    return null;
+  }
+  const patterns = [
+    /^(?:what(?:'s| is)?\s+(?:in|inside)|(?:list|show)\s+(?:me\s+)?(?:the\s+)?(?:files\s+in|contents\s+of))\s+(?:my\s+)?(.+?)(?:\s+folder)?$/i,
+    /^what(?:'s| is)?\s+in\s+(?:my\s+)?(.+?)(?:\s+folder)?$/i
+  ];
+  for (const pattern of patterns) {
+    const match = cleanPrompt.match(pattern);
+    if (match?.[1]?.trim()) {
+      return { name: "list_folder", args: { path: match[1].trim() } };
+    }
+  }
+  return null;
+}
+
+function resolveSpotifyPlayIntent(cleanPrompt: string): LocalToolInvocation | null {
+  const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
+  if (!playMatch) {
+    return null;
+  }
+  const query = playMatch[1].replace(/\b(on|in|through|via)\s+spotify\b/i, "").replace(/\s+for me$/i, "").trim();
+  if (!query || /^(the\s+)?(game|video|movie|film|episode|show)\b/i.test(query)) {
+    return null;
+  }
+  return { name: "spotify", args: { action: "play", kind: "track", query } };
 }
 
 function resolveScreenIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
