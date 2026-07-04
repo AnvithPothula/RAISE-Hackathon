@@ -14,7 +14,7 @@
     "chunk": 1280,
     "rate": 16000,
     "channels": 1,
-    "wakeWord": "mark",
+    "wakeWord": "walmart",
     "wakeThreshold": 0.25,
     "asrTimeoutSeconds": 10,
     "silenceTimeoutSeconds": 3,

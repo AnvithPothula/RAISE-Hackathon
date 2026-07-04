@@ -36,6 +36,35 @@ import type {
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+function WalmartSpark({ size = 20, color = "#ffc220" }: { size?: number; color?: string }) {
+  const rays = [0, 60, 120, 180, 240, 300];
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true" className="wm-spark">
+      {rays.map((angle) => (
+        <rect
+          key={angle}
+          x={46}
+          y={8}
+          width={8}
+          height={30}
+          rx={4}
+          fill={color}
+          transform={`rotate(${angle} 50 50)`}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function WalmartWordmark({ size = 22 }: { size?: number }) {
+  return (
+    <span className="wm-wordmark" style={{ fontSize: size }}>
+      <WalmartSpark size={size} />
+      <span>Walmart</span>
+    </span>
+  );
+}
+
 type VoiceAction = "wakeword" | "mic";
 type NodeStatus = "idle" | "listening" | "thinking" | "speaking" | "error";
 type SettingsTab = "general" | "audio" | "tools" | "paths";
@@ -48,11 +77,11 @@ type ConnectedNode = {
 };
 
 const QUICK_REPLIES = [
-  "What can you do?",
-  "Open my calendar",
-  "Play something relaxing",
-  "Summarize my clipboard",
-  "Turn on do not disturb"
+  "Where's the rollback aisle?",
+  "Add 40 gallons of milk to cart",
+  "Price check on register 12",
+  "Play the greeter theme song",
+  "Save money. Live better."
 ];
 
 const TOOL_ICONS: Record<string, React.ElementType> = {
@@ -70,7 +99,7 @@ export function App() {
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [toolEvents, setToolEvents] = useState<PiEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [configSummary, setConfigSummary] = useState("Gemma (local, on-device)");
+  const [configSummary, setConfigSummary] = useState("Everyday Low Prices AI");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -433,6 +462,9 @@ export function App() {
   return (
     <main className="app-shell" style={{ "--side-width": `${sideWidth}px` } as React.CSSProperties}>
       <section className="stage">
+        <div className="wm-watermark" aria-hidden="true">
+          <WalmartSpark size={520} color="rgba(255, 194, 32, 0.05)" />
+        </div>
         <TopBar
           state={state}
           statusText={statusText}
@@ -540,7 +572,8 @@ function TopBar({
       <div className="title-block">
         <p className="eyebrow">
           <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
-          Pythos v3
+          <WalmartWordmark size={16} />
+          <span className="eyebrow-tag">Wally &middot; Save Money. Live Better.</span>
         </p>
         <h1>{statusText}</h1>
       </div>
@@ -634,7 +667,7 @@ function OrbStage({
         <div className="pulse-ring one" />
         <div className="pulse-ring two" />
       </div>
-      <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
+      <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk to a greeter"}</span>
     </div>
   );
 }
@@ -716,7 +749,7 @@ function ControlDock({
           ref={promptRef}
           value={typedPrompt}
           onChange={(event) => onTypedPromptChange(event.target.value)}
-          placeholder="Type to Pythos"
+          placeholder="Ask Wally anything (prices may be rolled back)"
           aria-label="Type a prompt"
         />
         <button className="text-send" type="submit" title="Send typed prompt" disabled={!typedPrompt.trim()}>
@@ -730,6 +763,12 @@ function ControlDock({
             {text}
           </button>
         ))}
+      </div>
+
+      <div className="wm-footer">
+        <WalmartSpark size={16} />
+        <span>Save Money. Live Better.</span>
+        <WalmartSpark size={16} />
       </div>
     </div>
   );
@@ -768,7 +807,7 @@ function SidePanel({
 
       <section className="panel-section conversation-section">
         <header>
-          <h2><MessageSquare size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Conversation</h2>
+          <h2><WalmartSpark size={15} />Conversation</h2>
           <div className="panel-actions">
             <div className="search-bar">
               <Search size={13} />
@@ -791,8 +830,8 @@ function SidePanel({
           {visibleConversation.length === 0 ? (
             <div className="empty-state">
               <MessageSquare size={32} />
-              <p>No transcript yet</p>
-              <small>Speak or type to start a conversation.</small>
+              <p>Welcome to Walmart!</p>
+              <small>Speak or type to talk with your friendly greeter.</small>
             </div>
           ) : (
             visibleConversation.map((item) => (
@@ -810,7 +849,7 @@ function SidePanel({
 
       <section className="panel-section compact-section">
         <header>
-          <h2><Wrench size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />MCP Connectors</h2>
+          <h2><WalmartSpark size={15} />MCP Connectors</h2>
           <span className="panel-meta">{mcpStatus?.enabled ? `${mcpStatus.servers.filter((s) => s.connected).length}/${mcpStatus.servers.length} connected` : "disabled"}</span>
         </header>
         <div className="mcp-list">
@@ -829,7 +868,7 @@ function SidePanel({
 
       <section className="panel-section">
         <header>
-          <h2><Zap size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Tool Timeline</h2>
+          <h2><WalmartSpark size={15} />Tool Timeline</h2>
           <div className="panel-actions">
             <button className="panel-action" onClick={onClearToolEvents} title="Clear tool events">
               <Trash2 size={14} />
@@ -879,7 +918,7 @@ function SettingsModal({
       <section className="settings-modal" role="dialog" aria-modal="true" aria-label="Settings" onClick={(event) => event.stopPropagation()}>
         <header className="settings-header">
           <div>
-            <p className="eyebrow">Runtime</p>
+            <p className="eyebrow"><WalmartWordmark size={14} /></p>
             <h2>Settings</h2>
           </div>
           <button className="text-button" onClick={onClose}>Close</button>
@@ -1347,10 +1386,10 @@ function formatNodeStatus(status: NodeStatus): string {
 }
 
 function roleLabel(role: ConversationItem["role"]): string {
-  if (role === "user") return "You";
-  if (role === "assistant") return "Pythos";
-  if (role === "tool") return "Tool";
-  return "System";
+  if (role === "user") return "Valued Customer";
+  if (role === "assistant") return "Wally";
+  if (role === "tool") return "Associate";
+  return "Store Intercom";
 }
 
 function formatTime(timestamp: number): string {
