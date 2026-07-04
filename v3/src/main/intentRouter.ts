@@ -404,24 +404,34 @@ function resolveTimeIntent(cleanPrompt: string, normalized: string): LocalToolIn
   return { name: "time", args: location ? { location } : {} };
 }
 
+export function resolveOpenAppIntent(prompt: string): LocalToolInvocation | null {
+  return resolveOpenIntent(cleanDirectPrompt(prompt));
+}
+
 function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
-  const match = cleanPrompt.match(
-    /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
-  );
-  if (!match) {
-    return null;
+  const patterns = [
+    /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i,
+    /\b(?:please\s+)?(?:open|launch|start)\s+(?:up\s+)?(?:the\s+|my\s+|a\s+|an\s+)?([a-z0-9][a-z0-9\s.-]{0,40})\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleanPrompt.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const target = stripOpenIntentWords(match[1]);
+    if (!target) {
+      continue;
+    }
+    const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
+    if (isWebsiteTarget(normalized, target)) {
+      return { name: "open_website", args: { url: target } };
+    }
+    if (isDirectAppLaunchTarget(normalized, target)) {
+      return { name: "open_app", args: { app: target } };
+    }
   }
-  const target = stripOpenIntentWords(match[1]);
-  if (!target) {
-    return null;
-  }
-  const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
-  if (isWebsiteTarget(normalized, target)) {
-    return { name: "open_website", args: { url: target } };
-  }
-  if (isDirectAppLaunchTarget(normalized, target)) {
-    return { name: "open_app", args: { app: target } };
-  }
+
   return null;
 }
 

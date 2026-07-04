@@ -56,6 +56,18 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({ name: "open_app", args: { app: "Microsoft Paint" } });
   });
 
+  it("routes tabroom open requests instantly", () => {
+    const decision = routeUserIntent("open Tabroom");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "open_app", args: { app: "Tabroom" } });
+  });
+
+  it("routes conversational open app requests instantly", () => {
+    const decision = routeUserIntent("can you open spotify for me");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "open_app", args: { app: "spotify" } });
+  });
+
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");

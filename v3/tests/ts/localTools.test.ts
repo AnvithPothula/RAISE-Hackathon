@@ -82,6 +82,18 @@ describe("runNamedLocalTool", () => {
     expect(opened).toEqual(expected);
   });
 
+  it("reports unavailable apps honestly instead of claiming success", async () => {
+    const result = await runNamedLocalTool("open_app", { app: "Tabroom" }, null, {
+      openApp: async () => ({
+        opened: false,
+        detail: "Tabroom is not installed or not available on this Mac. I couldn't open it."
+      })
+    });
+
+    expect(result.text).toContain("not installed");
+    expect(result.text).not.toMatch(/^Opened /i);
+  });
+
   it("maps Paint aliases to platform handlers", async () => {
     const opened: string[] = [];
     await runNamedLocalTool("open_app", { app: "paint" }, null, {

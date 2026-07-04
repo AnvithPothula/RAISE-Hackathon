@@ -563,7 +563,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     });
     return result.text;
   } catch (error) {
-    const message = `Tool failed: ${String(error)}`;
+    const message = formatDirectToolFailure(invocation.name, error);
     debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
     broadcastLocalToolEvent("error", {
       name: invocation.name,
@@ -890,6 +890,14 @@ function clearPendingPiFallbacks(): void {
     clearTimeout(timer);
   }
   pendingPiPrompts.clear();
+}
+
+function formatDirectToolFailure(name: LocalToolName, error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (name === "open_app") {
+    return detail || "I couldn't open that app.";
+  }
+  return `Tool failed: ${detail}`;
 }
 
 function emitDebugEvent(text: string, details: Record<string, unknown> = {}): void {

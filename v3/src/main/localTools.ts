@@ -932,13 +932,19 @@ async function openApp(appName: string, services: LocalToolServices): Promise<Lo
     throw new Error("Missing app name.");
   }
   if (!services.openApp) {
-    throw new Error("Opening apps is not available in this runtime.");
+    return {
+      name: "open_app",
+      text: "Opening apps is not available in this runtime."
+    };
   }
   const outcome = await services.openApp(app);
-  if (outcome && outcome.opened === false) {
-    throw new Error(outcome.detail || `Could not confirm ${app} actually opened.`);
+  if (!outcome || outcome.opened === false) {
+    return {
+      name: "open_app",
+      text: outcome?.detail ?? `${app} is unavailable on this device. I couldn't open it.`
+    };
   }
-  return { name: "open_app", text: outcome?.detail ?? `Opened ${app}.` };
+  return { name: "open_app", text: outcome.detail ?? `Opened ${app}.` };
 }
 
 async function openWebsite(value: string, services: LocalToolServices): Promise<LocalToolResult> {

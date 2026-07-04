@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
-import { isToolAllowedForScope, routeUserIntent } from "./intentRouter.js";
+import { isToolAllowedForScope, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
+import { runNamedLocalTool } from "./localTools.js";
 import {
   buildFunctionDeclarations,
   executeToolCall,
@@ -224,6 +225,10 @@ export async function generateWithOllama(
     if (!toolCalls.length) {
       const content = cleanText(message.content);
       if (content) {
+        const verifiedOpen = await verifyOpenAppResponse(prompt, content, context);
+        if (verifiedOpen) {
+          return verifiedOpen;
+        }
         return content;
       }
       messages.push({
@@ -248,7 +253,9 @@ export async function generateWithOllama(
   }
 
   const final = await chat(messages, undefined, config, { think: false, context });
-  return cleanText(final.content) || "I did not get a response from the local model.";
+  const finalContent = cleanText(final.content) || "I did not get a response from the local model.";
+  const verifiedFinal = await verifyOpenAppResponse(prompt, finalContent, context);
+  return verifiedFinal ?? finalContent;
 }
 
 // Dispatch a tool call locally. run_sub_agent and deep_research are handled by
@@ -776,6 +783,37 @@ function buildMessages(prompt: string, context: ToolContext): OllamaMessage[] {
 
 function toOutcomeCall(toolCall: OllamaToolCall): ToolFunctionCall {
   return { name: toolCall.function?.name, args: toolCall.function?.arguments ?? {} };
+}
+
+async function verifyOpenAppResponse(
+  prompt: string,
+  content: string,
+  context: ToolContext
+): Promise<string | null> {
+  const openInvocation = resolveOpenAppIntent(prompt);
+  if (openInvocation) {
+    const result = await runNamedLocalTool(
+      openInvocation.name,
+      openInvocation.args,
+      context.knownLocation ?? null,
+      context.localToolServices ?? {}
+    );
+    return result.text;
+  }
+
+  if (!claimsAppWasOpened(content)) {
+    return null;
+  }
+
+  if (/\b(open|launch|start|pull up|get\s+.+\s+(?:going|running))\b/i.test(prompt)) {
+    return "I couldn't verify that app opened. Tell me the app name clearly and I'll try again.";
+  }
+
+  return null;
+}
+
+function claimsAppWasOpened(text: string): boolean {
+  return /\b(i(?:'ve| have)\s+(?:just\s+)?(?:opened|launched|started)|i\s+opened)\b/i.test(text);
 }
 
 function cleanText(text: string | undefined): string {
