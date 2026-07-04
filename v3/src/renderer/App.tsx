@@ -33,15 +33,7 @@ import type {
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 type VoiceAction = "wakeword" | "mic";
-type NodeStatus = "idle" | "listening" | "thinking" | "speaking" | "error";
 type SettingsTab = "general" | "audio" | "tools" | "paths";
-
-type ConnectedNode = {
-  id: string;
-  label: string;
-  status: NodeStatus;
-  lastSeen: number;
-};
 
 const QUICK_REPLIES = [
   "What can you do?",
@@ -78,12 +70,10 @@ export function App() {
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
   const [typedPrompt, setTypedPrompt] = useState("");
-  const [connectedNodes, setConnectedNodes] = useState<ConnectedNode[]>([]);
   const [toolFlashActive, setToolFlashActive] = useState(false);
   const [modelStats, setModelStats] = useState<ModelStats | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
   const [searchQuery, setSearchQuery] = useState("");
-  const [inspectingNode, setInspectingNode] = useState<ConnectedNode | null>(null);
   const [streamingText, setStreamingText] = useState<{ id: string; text: string } | null>(null);
   const [startTime] = useState(() => Date.now());
   const [showStats, setShowStats] = useState(false);
@@ -323,7 +313,6 @@ export function App() {
 
   function handlePiEvent(event: PiEvent) {
     setToolEvents((events) => [event, ...events].slice(0, 25));
-    setConnectedNodes((nodes) => updateConnectedNodes(nodes, event));
     const payload = event.payload as Record<string, unknown> | string;
     if (event.type === "error" || event.type === "unavailable") {
       setError(typeof payload === "string" ? payload : summarizeEvent(payload));
@@ -476,8 +465,6 @@ export function App() {
           showStats={showStats}
           uptime={uptime}
           conversationLength={conversation.length}
-          connectedNodes={connectedNodes}
-          onInspect={setInspectingNode}
           onToggle={state === "listening" ? stopAll : toggleMic}
         />
 
@@ -535,9 +522,6 @@ export function App() {
         />
       )}
 
-      {inspectingNode && (
-        <NodeInspector node={inspectingNode} onClose={() => setInspectingNode(null)} />
-      )}
     </main>
   );
 }
@@ -554,8 +538,6 @@ function AiChamber({
   showStats,
   uptime,
   conversationLength,
-  connectedNodes,
-  onInspect,
   onToggle
 }: {
   state: AssistantState;
@@ -569,8 +551,6 @@ function AiChamber({
   showStats: boolean;
   uptime: string;
   conversationLength: number;
-  connectedNodes: ConnectedNode[];
-  onInspect: (node: ConnectedNode) => void;
   onToggle: () => void;
 }) {
   const perfHint =
@@ -600,7 +580,7 @@ function AiChamber({
         </div>
         {showStats && (
           <div className="performance-stats">
-            {uptime} · {conversationLength} msgs · {connectedNodes.length} nodes
+            {uptime} · {conversationLength} msgs
           </div>
         )}
       </header>
@@ -609,7 +589,6 @@ function AiChamber({
         <div className="neural-field" aria-hidden="true">
           <div className="neural-ring ring-1" />
           <div className="neural-ring ring-2" />
-          <div className="neural-ring ring-3" />
         </div>
 
         <div
@@ -627,15 +606,9 @@ function AiChamber({
           }}
         >
           <div className="orb-glow" />
-          <div className="neural-nodes" aria-label="Connected nodes">
-            {connectedNodes.map((node, index) => (
-              <NodeOrbit node={node} index={index} count={connectedNodes.length} key={node.id} onInspect={() => onInspect(node)} />
-            ))}
-          </div>
           <div className="orb">
             <div className="orb-core" />
             <div className="pulse-ring one" />
-            <div className="pulse-ring two" />
           </div>
           <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
         </div>
@@ -776,30 +749,31 @@ function SidePanel({
 
       <section className="panel-section side-panel-main">
         <header className="side-panel-header">
-          <div className="side-tabs" role="tablist" aria-label="Sidebar panels">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sideTab === "chat"}
-              className={`side-tab ${sideTab === "chat" ? "active" : ""}`}
-              onClick={() => onSideTabChange("chat")}
-            >
-              <MessageSquare size={14} />
-              Chat
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sideTab === "activity"}
-              className={`side-tab ${sideTab === "activity" ? "active" : ""}`}
-              onClick={() => onSideTabChange("activity")}
-            >
-              <Zap size={14} />
-              Activity
-              {activityCount > 0 && <span className="side-tab-badge">{activityCount}</span>}
-            </button>
-          </div>
-          <div className="panel-actions">
+          <div className="side-panel-header-row">
+            <div className="side-tabs" role="tablist" aria-label="Sidebar panels">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sideTab === "chat"}
+                className={`side-tab ${sideTab === "chat" ? "active" : ""}`}
+                onClick={() => onSideTabChange("chat")}
+              >
+                <MessageSquare size={14} />
+                Chat
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sideTab === "activity"}
+                className={`side-tab ${sideTab === "activity" ? "active" : ""}`}
+                onClick={() => onSideTabChange("activity")}
+              >
+                <Zap size={14} />
+                Activity
+                {activityCount > 0 && <span className="side-tab-badge">{activityCount}</span>}
+              </button>
+            </div>
+            <div className="panel-actions">
             {sideTab === "chat" && (
               <>
                 <div className="search-bar">
@@ -824,6 +798,7 @@ function SidePanel({
                 <Trash2 size={14} />
               </button>
             )}
+          </div>
           </div>
         </header>
 
@@ -1099,64 +1074,6 @@ function SettingsModal({
   );
 }
 
-function NodeInspector({ node, onClose }: { node: ConnectedNode; onClose: () => void }) {
-  return (
-    <div className="node-inspector">
-      <header>
-        <h4>{node.label}</h4>
-        <button className="panel-action" onClick={onClose}>
-          <X size={14} />
-        </button>
-      </header>
-      <dl>
-        <dt>ID</dt>
-        <dd>{node.id}</dd>
-        <dt>Status</dt>
-        <dd>{formatNodeStatus(node.status)}</dd>
-        <dt>Last seen</dt>
-        <dd>{formatTime(node.lastSeen)}</dd>
-      </dl>
-    </div>
-  );
-}
-
-function NodeOrbit({
-  node,
-  index,
-  count,
-  onInspect
-}: {
-  node: ConnectedNode;
-  index: number;
-  count: number;
-  onInspect: () => void;
-}) {
-  const total = Math.max(count, 1);
-  const angle = (index * 360) / total;
-  const style = {
-    "--node-index": index,
-    "--node-angle": `${angle}deg`,
-    "--node-end-angle": `${angle + 360}deg`,
-    "--node-counter-angle": `${-angle}deg`,
-    "--node-end-counter-angle": `${-(angle + 360)}deg`,
-    "--orbit-duration": `${22 + index * 2}s`
-  } as React.CSSProperties;
-
-  return (
-    <div className={`node-orbit ${node.status}`} style={style}>
-      <span className="node-thread" aria-hidden="true" />
-      <div className="node-anchor" onClick={onInspect} role="button" tabIndex={0} aria-label={`Inspect ${node.label}`} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onInspect(); }}>
-        <div className="node-body">
-          <div className="node-orb" title={`${node.label}: ${formatNodeStatus(node.status)}`}>
-            <span className="node-status-dot" />
-          </div>
-          <span className="node-label">{node.label}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ToolEventCard({ event }: { event: PiEvent }) {
   const payload = event.payload as Record<string, unknown> | string;
   const type = typeof payload === "object" && payload ? String((payload as Record<string, unknown>).type ?? event.type) : event.type;
@@ -1316,64 +1233,6 @@ function trimItems(items: ConversationItem[], config: AppConfig | null): Convers
   const max = config?.gui?.maxTranscriptItems ?? 100;
   if (items.length <= max) return items;
   return items.slice(items.length - max);
-}
-
-function updateConnectedNodes(nodes: ConnectedNode[], event: PiEvent): ConnectedNode[] {
-  const echoEvent = extractEchoEvent(event);
-  if (!echoEvent) return nodes;
-  const payload = echoEvent.payload;
-  if (!payload || typeof payload !== "object") return nodes;
-  const record = payload as Record<string, unknown>;
-  const deviceId = typeof record.deviceId === "string" && record.deviceId.trim() ? record.deviceId.trim() : "";
-  if (!deviceId) return nodes;
-  const eventType = String(record.type ?? echoEvent.type);
-  if (eventType === "offline" || eventType === "disconnected") return nodes.filter((node) => node.id !== deviceId);
-  const existingIndex = nodes.findIndex((node) => node.id === deviceId);
-  const existingNode = existingIndex >= 0 ? nodes[existingIndex] : null;
-  if (echoEvent.type === "realtime_state" && !existingNode) return nodes;
-  const label = extractNodeLabel(record, deviceId, existingNode?.label);
-  const status = eventType === "audio_level" && existingNode ? existingNode.status : deriveNodeStatus(echoEvent.type, eventType, record);
-  const nextNode: ConnectedNode = { id: deviceId, label, status, lastSeen: Date.now() };
-  const nextNodes = existingIndex >= 0
-    ? nodes.map((node, index) => (index === existingIndex ? { ...node, ...nextNode } : node))
-    : [...nodes, nextNode];
-  return nextNodes.sort((left, right) => right.lastSeen - left.lastSeen).slice(0, 8);
-}
-
-function extractEchoEvent(event: PiEvent): { type: string; payload: unknown } | null {
-  if (event.type !== "echo" || !event.payload || typeof event.payload !== "object") return null;
-  const payload = event.payload as Record<string, unknown>;
-  if (typeof payload.type !== "string") return null;
-  return { type: payload.type, payload: payload.payload };
-}
-
-function extractNodeLabel(record: Record<string, unknown>, deviceId: string, fallbackLabel?: string): string {
-  const candidates = [record.deviceName, record.name, record.label, record.friendlyName];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 24);
-  }
-  if (fallbackLabel) return fallbackLabel;
-  if (/echo|alexa/i.test(deviceId)) return "Alexa";
-  return deviceId.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 24);
-}
-
-function deriveNodeStatus(echoType: string, eventType: string, record: Record<string, unknown>): NodeStatus {
-  if (echoType === "error" || eventType === "error") return "error";
-  const value = typeof record.value === "string" ? record.value : "";
-  if (eventType === "listening" || eventType === "wake" || value === "listening" || value === "wakeword") return "listening";
-  if (echoType === "upload_started" || echoType === "transcript" || eventType === "final_transcript") return "thinking";
-  if (echoType === "reply" || eventType === "tts_play_requested" || eventType === "play_audio") return "speaking";
-  if (eventType === "idle" || eventType === "online" || eventType === "status" || eventType === "heartbeat") return "idle";
-  if (echoType === "realtime_state" && value === "thinking") return "thinking";
-  return "idle";
-}
-
-function formatNodeStatus(status: NodeStatus): string {
-  if (status === "idle") return "Idle";
-  if (status === "listening") return "Listening";
-  if (status === "thinking") return "Thinking";
-  if (status === "speaking") return "Speaking";
-  return "Error";
 }
 
 function roleLabel(role: ConversationItem["role"]): string {
