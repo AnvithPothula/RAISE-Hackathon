@@ -190,11 +190,17 @@ describe("runNamedLocalTool", () => {
       setTimeout: (_callback, delayMs) => {
         scheduledDelay = delayMs;
         return fakeTimer;
-      }
+      },
+      setSystemClockAlarm: async () => ({
+        clockOpened: true,
+        systemAlarmSet: true,
+        detail: "Added the alarm to the Mac Clock app."
+      })
     });
 
     expect(scheduledDelay).toBe(300_000);
     expect(result.text).toContain("Set alarm alarm-rs");
+    expect(result.text).toContain("Mac Clock app");
   });
 
   it("uses injected user memory service", async () => {

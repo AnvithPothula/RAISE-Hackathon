@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { multiPartAnswerNudge, routeUserIntent } from "../../src/main/intentRouter.js";
+import { collectInstantInvocations, multiPartAnswerNudge, routeUserIntent } from "../../src/main/intentRouter.js";
 import { buildFunctionDeclarations } from "../../src/main/toolRuntime.js";
 
 describe("routeUserIntent", () => {
@@ -123,6 +123,21 @@ describe("routeUserIntent", () => {
     expect(decision.invocation?.args.action).toBe("open");
   });
 
+  it("routes open clock requests instantly", () => {
+    const decision = routeUserIntent("open the clock app");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation?.name).toBe("open_app");
+    expect(String(decision.invocation?.args.app ?? "").toLowerCase()).toContain("clock");
+  });
+
+  it("routes set alarm requests instantly", () => {
+    const decision = routeUserIntent("set an alarm for 7:30 am");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "7:30 am", label: "Alarm" }
+    });
+  });
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");
@@ -175,6 +190,27 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toBeNull();
     expect(decision.llmToolScope).toBe("standard");
     expect(decision.reason).toBe("multi-tool-loop");
+  });
+
+  it("decomposes weather plus open app into two instant invocations", () => {
+    const prompt = "what is the weather like in apple valley and open messages";
+    const invocations = collectInstantInvocations(prompt);
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0]).toEqual({ name: "weather", args: { location: "apple valley" } });
+    expect(invocations[1]).toEqual({ name: "open_app", args: { app: "messages" } });
+  });
+
+  it("decomposes open Settings and Calendar into two app launches", () => {
+    const invocations = collectInstantInvocations("Open Settings and Calendar");
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0]).toEqual({ name: "open_app", args: { app: "Settings" } });
+    expect(invocations[1]).toEqual({ name: "open_app", args: { app: "Calendar" } });
+  });
+
+  it("decomposes three-app open requests", () => {
+    const invocations = collectInstantInvocations("Open Settings, Calendar, and Messages");
+    expect(invocations).toHaveLength(3);
+    expect(invocations.map((inv) => inv.args.app)).toEqual(["Settings", "Calendar", "Messages"]);
   });
 });
 

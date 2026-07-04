@@ -2,7 +2,12 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
+import {
+  collectInstantInvocations,
+  promptNeedsMultiToolLoop,
+  routeUserIntent,
+  resolveContextualLocalTool as resolveContextualFromRouter
+} from "./intentRouter.js";
 import type { FilesystemAccess } from "./filesystemAccess.js";
 import { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { normalizeMathExpression } from "./mathExpression.js";
@@ -10,6 +15,7 @@ import { normalizeMathExpression } from "./mathExpression.js";
 export { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { cleanAppTarget, normalizeVoiceTranscript } from "./voiceTranscript.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
+import { setSystemClockAlarm, type SystemAlarmRequest, type SystemAlarmResult } from "./systemAlarm.js";
 import type { UserMemoryService } from "./userMemory.js";
 
 export type LocalToolResult = {
@@ -63,6 +69,7 @@ export type LocalToolServices = {
   openWebsite?: (url: string) => Promise<void>;
   filesystemAccess?: FilesystemAccess;
   onAlarm?: (alarm: AlarmItem) => void;
+  setSystemClockAlarm?: (request: SystemAlarmRequest) => Promise<SystemAlarmResult>;
   fetch?: FetchService;
   geocode?: GeocodeService;
   forecast?: ForecastService;
@@ -194,6 +201,11 @@ const WINDOWS_APP_ALIASES: Record<string, string> = {
   powershell: "powershell.exe",
   terminal: "wt.exe",
   spotify: "spotify.exe",
+  clock: "ms-clock:alarms",
+  alarm: "ms-clock:alarms",
+  alarms: "ms-clock:alarms",
+  "alarms and clock": "ms-clock:alarms",
+  "world clock": "ms-clock:alarms",
   "github desktop": "GitHubDesktop.exe"
 };
 
@@ -243,6 +255,11 @@ const MAC_APP_ALIASES: Record<string, string> = {
   music: "Music",
   mail: "Mail",
   calendar: "Calendar",
+  clock: "Clock",
+  alarm: "Clock",
+  alarms: "Clock",
+  "alarms and clock": "Clock",
+  "world clock": "Clock",
   messages: "Messages",
   photos: "Photos",
   "github desktop": "GitHub Desktop",
@@ -324,22 +341,38 @@ export async function runLocalTool(
   return null;
 }
 
-export function resolveDirectLocalTool(
+export function resolveDirectLocalTools(
   prompt: string,
   context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
-): LocalToolInvocation | null {
+): LocalToolInvocation[] {
+  const compound = collectInstantInvocations(prompt, context).map(normalizeOpenAppInvocation);
+  if (compound.length >= 2) {
+    return compound;
+  }
+  if (compound.length === 1 && !promptNeedsMultiToolLoop(prompt)) {
+    return compound;
+  }
+
   const decision = routeUserIntent(prompt, context);
   if (decision.invocation) {
-    return normalizeOpenAppInvocation(decision.invocation);
+    return [normalizeOpenAppInvocation(decision.invocation)];
   }
 
   const cleanPrompt = cleanDirectPrompt(prompt);
   const spotifyInvocation = resolveDirectSpotifyTool(cleanPrompt);
   if (spotifyInvocation) {
-    return spotifyInvocation;
+    return [spotifyInvocation];
   }
 
-  return null;
+  return [];
+}
+
+export function resolveDirectLocalTool(
+  prompt: string,
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+): LocalToolInvocation | null {
+  const invocations = resolveDirectLocalTools(prompt, context);
+  return invocations[0] ?? null;
 }
 
 function normalizeOpenAppInvocation(invocation: LocalToolInvocation): LocalToolInvocation {
@@ -872,7 +905,7 @@ function booleanState(value: unknown): string {
   throw new Error("Spotify shuffle requires a boolean state.");
 }
 
-function manageAlarm(args: LocalToolArgs, services: LocalToolServices): LocalToolResult {
+async function manageAlarm(args: LocalToolArgs, services: LocalToolServices): Promise<LocalToolResult> {
   const action = String(args.action ?? "set").toLowerCase();
   const now = services.now?.() ?? Date.now();
   const clearTimer = services.clearTimeout ?? clearTimeout;
@@ -913,9 +946,23 @@ function manageAlarm(args: LocalToolArgs, services: LocalToolServices): LocalToo
     services.onAlarm?.({ id, dueAt, label });
   }, delayMs);
   alarms.set(id, { id, dueAt, label, timeout });
+
+  const setSystemAlarm = services.setSystemClockAlarm ?? setSystemClockAlarm;
+  let systemNote = "";
+  if (process.platform === "darwin" || process.platform === "win32") {
+    try {
+      const systemResult = await setSystemAlarm({ dueAt, label });
+      if (systemResult.detail) {
+        systemNote = ` ${systemResult.detail}`;
+      }
+    } catch (error) {
+      systemNote = ` I couldn't sync with the system Clock app: ${String(error)}`;
+    }
+  }
+
   return {
     name: "alarm",
-    text: `Set alarm ${id} for ${formatDateTimeLocal(dueAt)}: ${label}.`
+    text: `Set alarm ${id} for ${formatDateTimeLocal(dueAt)}: ${label}.${systemNote}`
   };
 }
 
@@ -1657,7 +1704,7 @@ function describeCapabilities(): LocalToolResult {
     name: "capabilities",
     text:
       "I'm Pythos, running entirely on-device with local Gemma. I can open apps and websites, " +
-      "look at your screen and describe it with local vision, check weather and time, set alarms, " +
+      "look at your screen and describe it with local vision, check weather and time, set alarms in Clock, " +
       "control Spotify, do math, run code, search the web, research topics, use system tools like " +
       "clipboard, files, and notes, and remember things you tell me. Everything runs locally, so it " +
       "keeps working offline and your voice never leaves the machine."

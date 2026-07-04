@@ -443,22 +443,119 @@ export function resolveOpenAppIntent(prompt: string): LocalToolInvocation | null
   return resolveOpenIntent(cleanDirectPrompt(prompt));
 }
 
-function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
-  const match = cleanPrompt.match(
-    /\b(?:please\s+)?(?:openup|open|launch|start|pull|bring|fire)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
-  );
-  if (!match) {
-    return null;
+/**
+ * Collect every instant local-tool invocation parseable from a compound prompt
+ * (e.g. weather + open app, or open Settings and Calendar).
+ */
+export function collectInstantInvocations(
+  prompt: string,
+  context: IntentRoutingContext = {}
+): LocalToolInvocation[] {
+  const cleanPrompt = cleanDirectPrompt(prompt);
+  const normalized = normalizeCommandText(cleanPrompt);
+  const invocations: LocalToolInvocation[] = [];
+  const seen = new Set<string>();
+
+  const add = (invocation: LocalToolInvocation | null): void => {
+    if (!invocation) {
+      return;
+    }
+    const key = `${invocation.name}:${JSON.stringify(invocation.args)}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    invocations.push(invocation);
+  };
+
+  if (isOpenOnlyPrompt(cleanPrompt, normalized)) {
+    const multiOpen = resolveMultipleOpenIntents(cleanPrompt);
+    if (multiOpen.length >= 2) {
+      multiOpen.forEach(add);
+      return invocations;
+    }
   }
-  const rawTarget = match[1];
+
+  add(resolveWeatherIntent(cleanPrompt, normalized, context.knownLocation));
+  add(resolveTimeIntent(cleanPrompt, normalized, context.knownLocation));
+  add(resolveCalculatorIntent(cleanPrompt, normalized));
+  add(resolveClipboardIntent(cleanPrompt, normalized));
+  add(resolveTrailingOpenIntent(cleanPrompt));
+
+  return invocations;
+}
+
+function isOpenOnlyPrompt(cleanPrompt: string, normalized: string): boolean {
+  if (
+    !/^(?:please\s+)?(?:can you\s+)?(?:openup|open|launch|start|pull|bring)(?:\s+up|\s+open)?\b/i.test(
+      cleanPrompt
+    )
+  ) {
+    return false;
+  }
+  return !/\b(weather|forecast|temperature|what is|what s|why|how|remember|search|play|alarm|clipboard|screen|calculate)\b/.test(
+    normalized
+  );
+}
+
+function splitCompoundTargets(text: string): string[] {
+  return text
+    .split(/\s*,\s*|\s+and\s+/i)
+    .map((part) => cleanAppTarget(part.replace(/^(?:and\s+)+/i, "")))
+    .filter(Boolean);
+}
+
+function resolveMultipleOpenIntents(cleanPrompt: string): LocalToolInvocation[] {
+  const prefix =
+    /^(?:please\s+)?(?:can you\s+)?(?:openup|open|launch|start|pull|bring)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?/i;
+  const match = cleanPrompt.match(prefix);
+  if (!match) {
+    return [];
+  }
+  const remainder = cleanPrompt.slice(match[0].length).trim();
+  if (!/\s+and\s+|\s*,\s*/i.test(remainder)) {
+    return [];
+  }
+
+  const targets = splitCompoundTargets(remainder);
+  if (targets.length < 2) {
+    return [];
+  }
+
+  const invocations: LocalToolInvocation[] = [];
+  for (const target of targets) {
+    const invocation = resolveOpenIntentFromTarget(target);
+    if (!invocation) {
+      return [];
+    }
+    invocations.push(invocation);
+  }
+  return invocations;
+}
+
+function resolveTrailingOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
+  const embedded = cleanPrompt.match(
+    /\band\s+(?:also\s+)?(?:please\s+)?(?:openup|open|launch|start|pull|bring|fire)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
+  );
+  if (embedded) {
+    return resolveOpenIntentFromTarget(embedded[1]);
+  }
+  if (/\b(?:weather|forecast|temperature|time|what|how|why|calculate|clipboard)\b/i.test(cleanPrompt)) {
+    return resolveOpenIntent(cleanPrompt);
+  }
+  return null;
+}
+
+function resolveOpenIntentFromTarget(rawTarget: string, cleanPrompt?: string): LocalToolInvocation | null {
   const target = cleanAppTarget(rawTarget);
   if (!target) {
     return null;
   }
   const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
   const wantsDesktopApp =
-    /\b(desktop|application|app)\b/i.test(rawTarget) ||
-    /\b(?:desktop|application)\s+(?:app\s+)?$/i.test(cleanPrompt);
+    Boolean(cleanPrompt) &&
+    (/\b(desktop|application|app)\b/i.test(rawTarget) ||
+      /\b(?:desktop|application)\s+(?:app\s+)?$/i.test(cleanPrompt ?? ""));
 
   if (wantsDesktopApp) {
     const appTarget = normalized === "github" ? "GitHub Desktop" : target;
@@ -477,6 +574,16 @@ function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
   }
 
   return null;
+}
+
+function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
+  const match = cleanPrompt.match(
+    /\b(?:please\s+)?(?:openup|open|launch|start|pull|bring|fire)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
+  );
+  if (!match) {
+    return null;
+  }
+  return resolveOpenIntentFromTarget(match[1], cleanPrompt);
 }
 
 function resolveSpotifyFollowUp(cleanPrompt: string, normalized: string): LocalToolInvocation | null {

@@ -108,7 +108,7 @@ export const FUNCTION_DECLARATIONS = [
   {
     name: "set_manage_alarm",
     description:
-      "Set, list, or cancel alarms. Use for reminders like 'set an alarm in 5 minutes', 'wake me at 7am', 'list alarms', or 'cancel alarm alarm-id'.",
+      "Set, list, or cancel alarms. Opens the native Clock app on Mac and Windows and registers a matching system alarm when possible. Also keeps a local Pythos alarm as backup.",
     parameters: {
       type: "object",
       properties: {
