@@ -841,6 +841,12 @@ function openLocalApp(target: string): Promise<void> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
     return shell.openExternal(target);
   }
+  if (process.platform === "darwin") {
+    return openLocalAppOnMac(target);
+  }
+  if (process.platform !== "win32") {
+    return openLocalAppOnLinux(target);
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(target, {
       detached: true,
@@ -849,6 +855,48 @@ function openLocalApp(target: string): Promise<void> {
     });
     child.on("error", () => {
       openLocalAppWithPowerShell(target).then(resolve, reject);
+    });
+    child.on("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function openLocalAppOnMac(target: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("open", ["-a", target], { stdio: "pipe" });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf-8");
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      // The app was not found by name; try opening it as a path or bundle.
+      const fallback = spawn("open", [target], { detached: true, stdio: "ignore" });
+      fallback.on("error", () => reject(new Error(stderr.trim() || `Could not open app ${target}.`)));
+      fallback.on("spawn", () => {
+        fallback.unref();
+        resolve();
+      });
+    });
+  });
+}
+
+function openLocalAppOnLinux(target: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(target, { detached: true, stdio: "ignore" });
+    child.on("error", () => {
+      const fallback = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
+      fallback.on("error", () => reject(new Error(`Could not open app ${target}.`)));
+      fallback.on("spawn", () => {
+        fallback.unref();
+        resolve();
+      });
     });
     child.on("spawn", () => {
       child.unref();

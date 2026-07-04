@@ -33,7 +33,8 @@
     "sttModel": "default",
     "sttInputFormat": "pcm_16000",
     "vadHorizonIndex": 2,
-    "vadInactivityThreshold": 0.5
+    "vadInactivityThreshold": 0.85,
+    "vadMinSilenceSeconds": 1.2
   },
   "pi": {
     "command": "pi",

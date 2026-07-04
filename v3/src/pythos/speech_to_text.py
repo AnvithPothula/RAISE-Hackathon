@@ -336,6 +336,7 @@ class SpeechListener:
 
             async def consumer() -> None:
                 nonlocal last_partial
+                silence_started: float | None = None
                 async for raw in ws:
                     msg = json.loads(raw)
                     kind = msg.get("type")
@@ -349,18 +350,31 @@ class SpeechListener:
                                 debug(f"gradium partial text={partial!r}")
                                 if self._is_current_stop_event(stop_event):
                                     self._events.emit("partial_transcript", text=partial)
+                            # New speech arrived; cancel any pending end-of-turn.
+                            silence_started = None
                     elif kind == "step":
                         vad = msg.get("vad") or []
                         idx = cfg.vad_horizon_index
-                        if (
+                        inactive = (
                             segments
                             and len(vad) > idx
                             and float(vad[idx].get("inactivity_prob", 0.0))
                             > cfg.vad_inactivity_threshold
-                        ):
-                            debug("gradium stt end-of-turn via semantic VAD")
-                            turn_done.set()
-                            return
+                        )
+                        if inactive:
+                            now = time.monotonic()
+                            if silence_started is None:
+                                silence_started = now
+                            if now - silence_started >= cfg.vad_min_silence_seconds:
+                                debug(
+                                    "gradium stt end-of-turn via semantic VAD "
+                                    f"after {now - silence_started:.2f}s silence"
+                                )
+                                turn_done.set()
+                                return
+                        else:
+                            # Speech resumed (or never paused); reset the silence timer.
+                            silence_started = None
                     elif kind == "end_of_stream":
                         return
                     elif kind == "error":

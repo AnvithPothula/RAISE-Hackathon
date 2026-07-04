@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { appRoot } from "./config.js";
+import { appRoot, resolveWorkerPython } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_SKILLS = 24;
@@ -102,7 +102,7 @@ export async function runSkillScript(args: SkillScriptArgs): Promise<SkillScript
     throw new Error(`Skill script does not exist: ${script}`);
   }
 
-  const executable = scriptPath.toLowerCase().endsWith(".py") ? "python" : scriptPath;
+  const executable = scriptPath.toLowerCase().endsWith(".py") ? resolveWorkerPython() : scriptPath;
   const execArgs = scriptPath.toLowerCase().endsWith(".py") ? [scriptPath, ...scriptArgs] : scriptArgs;
   const result = await execSkillFile(executable, execArgs, skill.root);
   const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n").slice(0, MAX_OUTPUT_LENGTH);

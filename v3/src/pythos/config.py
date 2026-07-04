@@ -45,6 +45,7 @@ class GradiumConfig:
     stt_input_format: str
     vad_horizon_index: int
     vad_inactivity_threshold: float
+    vad_min_silence_seconds: float
 
     @property
     def is_configured(self) -> bool:
@@ -133,6 +134,7 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
             stt_input_format=str(gradium_data.get("sttInputFormat", "pcm_16000")),
             vad_horizon_index=int(gradium_data.get("vadHorizonIndex", 2)),
             vad_inactivity_threshold=float(gradium_data.get("vadInactivityThreshold", 0.5)),
+            vad_min_silence_seconds=float(gradium_data.get("vadMinSilenceSeconds", 1.0)),
         ),
     )
 
