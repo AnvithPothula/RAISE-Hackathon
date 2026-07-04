@@ -7,6 +7,10 @@ supplies their own keys via environment variables. The Python worker
 inherits the environment of whatever shell launches the app, so the
 keys below must be exported in that shell BEFORE you start Pythos.
 
+Required for the LLM (language + vision):
+  GEMINI_API_KEY    -> Google AI Studio (Gemini) API (get it at
+                       https://aistudio.google.com/apikey)
+
 Required for speech features:
   GRADIUM_API_KEY   -> Text-to-Speech + Speech-to-Text (get it at
                        https://studio.gradium.ai)
@@ -14,8 +18,29 @@ Required for speech features:
 Optional (existing integrations):
   PYTHOS_WEB_SEARCH_KEY  -> web search
   SPOTIFY_CLIENT_ID      -> Spotify control
-  PYTHOS_OLLAMA_MODEL    -> override the local LLM model
+  PYTHOS_GEMINI_MODEL    -> override the Gemini model (default gemini-2.5-flash)
   PYTHOS_PI_COMMAND      -> override the `pi` executable
+
+
+----------------------------------------------------------------------
+ Quick start: create a local .env file
+----------------------------------------------------------------------
+
+The fastest way to add your Gemini key is to copy the example .env and
+append the key. This file is gitignored so it will NOT be committed.
+
+# Windows - PowerShell:
+cd e:\RAISE-Hackathon\v3
+Copy-Item .env.example .env -Force
+Add-Content .env "GEMINI_API_KEY=your_key_here"
+
+# macOS / Linux (bash or zsh):
+cd /path/to/RAISE-Hackathon/v3
+cp .env.example .env
+echo 'GEMINI_API_KEY=your_key_here' >> .env
+
+The same GEMINI_API_KEY is used by both the direct Gemini client and
+the Pi bridge. Add GRADIUM_API_KEY the same way for speech features.
 
 
 ----------------------------------------------------------------------
