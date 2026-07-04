@@ -304,6 +304,17 @@ describe("routeUserIntent", () => {
     expect(decision.reason).toBe("multi-tool-loop");
   });
 
+  it("collects weather plus dated reminders as direct tools", () => {
+    const invocations = collectInstantInvocations(
+      "What's the weather and remind me to wish Jimmy happy birthday tomorrow.",
+      { knownLocation: "Eagan, Minnesota" }
+    );
+    expect(invocations).toEqual([
+      { name: "weather", args: {} },
+      { name: "calendar", args: { action: "add", title: "Wish Jimmy happy birthday", date: "tomorrow" } }
+    ]);
+  });
+
   it("still routes simple weather instantly", () => {
     const decision = routeUserIntent("find me the weather in Albuquerque");
     expect(decision.difficulty).toBe("instant");

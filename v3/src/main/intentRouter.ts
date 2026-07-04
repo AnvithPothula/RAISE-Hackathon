@@ -480,6 +480,10 @@ function resolveCalendarIntent(cleanPrompt: string, normalized: string): LocalTo
       };
     }
   }
+  const reminder = resolveDatedReminderIntent(cleanPrompt, normalized);
+  if (reminder) {
+    return reminder;
+  }
   if (!/\b(add|ad|put|schedule|create)\b/.test(normalized)) {
     return null;
   }
@@ -500,6 +504,37 @@ function resolveCalendarIntent(cleanPrompt: string, normalized: string): LocalTo
   return { name: "calendar", args: { action: "add", title, date } };
 }
 
+function resolveDatedReminderIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+  if (!/\bremind\s+me\b/.test(normalized) || !looksLikeCalendarDate(normalized)) {
+    return null;
+  }
+  const date = extractCalendarDateText(cleanPrompt);
+  if (!date) {
+    return null;
+  }
+  const patterns = [
+    /remind\s+me\s+to\s+(.+?)\s+(?:on\s+)?(today|tomorrow|sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec|\d{1,2}\/\d{1,2})/i,
+    /remind\s+me\s+(today|tomorrow|sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec|\d{1,2}\/\d{1,2})\s+to\s+(.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = cleanPrompt.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const title = pattern === patterns[0] ? match[1] : match[2];
+    const cleanTitle = cleanCalendarTitle(String(title ?? ""));
+    if (cleanTitle) {
+      return { name: "calendar", args: { action: "add", title: sentenceCase(cleanTitle), date } };
+    }
+  }
+  return null;
+}
+
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  return trimmed ? `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1)}` : "";
+}
+
 function isCalendarQuery(normalized: string): boolean {
   return (
     /\b(what|show|list|tell me)\b/.test(normalized) &&
@@ -513,6 +548,10 @@ function extractCalendarDateText(prompt: string): string | null {
   const normalized = normalizeCommandText(cleaned);
   if (/^(today|tomorrow)$/i.test(cleaned)) {
     return cleaned;
+  }
+  const relative = cleaned.match(/\b(today|tomorrow)\b/i);
+  if (relative) {
+    return relative[1] ?? null;
   }
   const weekday = cleaned.match(/\b(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/i);
   if (weekday) {
@@ -661,6 +700,7 @@ export function collectInstantInvocations(
   add(resolveCalculatorIntent(cleanPrompt, normalized));
   add(resolveClipboardIntent(cleanPrompt, normalized));
   add(resolveAlarmIntent(cleanPrompt, normalized, context));
+  add(resolveCalendarIntent(cleanPrompt, normalized));
   add(resolveTrailingOpenIntent(cleanPrompt));
 
   return invocations;
