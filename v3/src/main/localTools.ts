@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
+import { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { normalizeMathExpression } from "./mathExpression.js";
+
+export { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { cleanAppTarget, normalizeVoiceTranscript } from "./voiceTranscript.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
 import type { UserMemoryService } from "./userMemory.js";
@@ -1715,7 +1718,7 @@ async function getWeather(
   knownLocation: string | null,
   services: LocalToolServices
 ): Promise<LocalToolResult> {
-  const location = extractLocationFromPrompt(prompt) ?? knownLocation ?? "Eagan, Minnesota";
+  const location = extractLocationFromPrompt(prompt, knownLocation) ?? knownLocation ?? "Eagan, Minnesota";
   return getWeatherForLocation(location, services);
 }
 
@@ -1809,26 +1812,6 @@ async function geocode(location: string, fetchService?: FetchService): Promise<G
     }
   }
   throw new Error(`I could not find a location named ${location}.`);
-}
-
-export function extractLocationFromPrompt(prompt: string): string | null {
-  const explicit = prompt.match(/\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})(?:[?.!]+)?$/i);
-  if (explicit) {
-    return cleanLocation(explicit[1]);
-  }
-  const embedded = prompt.match(/\b(?:weather|forecast|temperature|temp|time|date)\b[^?.!]*\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})/i);
-  if (embedded) {
-    return cleanLocation(embedded[1]);
-  }
-  return null;
-}
-
-function cleanLocation(value: string): string | null {
-  const location = value
-    .replace(/\b(today|right now|currently|now|please|thanks|thank you)\b/gi, "")
-    .replace(/[?.!]+$/g, "")
-    .trim();
-  return location.length >= 3 ? location : null;
 }
 
 function formatPlace(place: GeocodedPlace): string {

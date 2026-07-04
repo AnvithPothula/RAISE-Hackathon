@@ -400,7 +400,7 @@ export async function executeToolCall(call: ToolFunctionCall, context: ToolConte
 
   const startedAt = Date.now();
   try {
-    const args = resolveToolArgs(toolName, parseToolArgs(call.args), context.prompt ?? "");
+    const args = resolveToolArgs(toolName, parseToolArgs(call.args), context.prompt ?? "", context.knownLocation);
     context.onToolEvent?.("start", {
       name: toolName,
       args,
@@ -453,9 +453,14 @@ async function executeMcpToolCall(call: ToolFunctionCall, context: ToolContext):
   }
 }
 
-function resolveToolArgs(toolName: LocalToolName, args: LocalToolArgs, prompt: string): LocalToolArgs {
+function resolveToolArgs(
+  toolName: LocalToolName,
+  args: LocalToolArgs,
+  prompt: string,
+  knownLocation?: string | null
+): LocalToolArgs {
   if ((toolName === "weather" || toolName === "time") && !args.location) {
-    return { ...args, location: extractLocationFromPrompt(prompt) };
+    return { ...args, location: extractLocationFromPrompt(prompt, knownLocation) };
   }
   if (toolName === "screen" && !args.query) {
     return { ...args, query: prompt };

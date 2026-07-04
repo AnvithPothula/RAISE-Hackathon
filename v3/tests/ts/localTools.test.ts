@@ -25,6 +25,17 @@ describe("extractLocationFromPrompt", () => {
   it("strips polite trailing words and punctuation", () => {
     expect(extractLocationFromPrompt("what is the weather in paris please?")).toBe("paris");
   });
+
+  it("finds a place named earlier in a compound request", () => {
+    const prompt =
+      "Search finding cool things to do in Albuquerque, then tell me the current weather there.";
+    expect(extractLocationFromPrompt(prompt, "Eagan, Minnesota")).toBe("Albuquerque");
+  });
+
+  it("stops location capture before a trailing and-clause", () => {
+    const prompt = "Find me fun things to do in Albuquerque and tell me the current weather there.";
+    expect(extractLocationFromPrompt(prompt, "Eagan, Minnesota")).toBe("Albuquerque");
+  });
 });
 
 describe("runNamedLocalTool", () => {

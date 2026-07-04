@@ -1,5 +1,6 @@
 import type { LocalToolInvocation, LocalToolName } from "./localTools.js";
 import { extractMathExpression, looksLikeMathQuestion } from "./mathExpression.js";
+import { extractLocationFromPrompt } from "./locationUtils.js";
 import { cleanAppTarget, stripConversationalPrefix } from "./voiceTranscript.js";
 
 /** instant = run a local tool with zero LLM; simple/complex = Gemma with trimmed/full tools. */
@@ -79,6 +80,15 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
   const cleanPrompt = cleanDirectPrompt(prompt);
   const normalized = normalizeCommandText(cleanPrompt);
 
+  if (needsMultiToolLoop(cleanPrompt, normalized)) {
+    return {
+      difficulty: "simple",
+      invocation: null,
+      llmToolScope: "standard",
+      reason: "multi-tool-loop"
+    };
+  }
+
   const contextual = resolveContextualIntent(cleanPrompt, normalized, context);
   if (contextual) {
     return contextual;
@@ -94,8 +104,8 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
     resolveMemoryIntent(cleanPrompt, normalized) ??
     resolveWebSearchIntent(cleanPrompt, normalized) ??
     resolveGoToWebsiteIntent(cleanPrompt, normalized) ??
-    resolveWeatherIntent(cleanPrompt, normalized) ??
-    resolveTimeIntent(cleanPrompt, normalized) ??
+    resolveWeatherIntent(cleanPrompt, normalized, context.knownLocation) ??
+    resolveTimeIntent(cleanPrompt, normalized, context.knownLocation) ??
     resolveOpenIntent(cleanPrompt) ??
     resolveSpotifyPlayIntent(cleanPrompt);
 
@@ -153,6 +163,9 @@ function classifyLlmToolScope(cleanPrompt: string, normalized: string): LlmToolS
   const words = normalized.split(/\s+/).filter(Boolean).length;
   const text = ` ${normalized} `;
 
+  if (needsMultiToolLoop(cleanPrompt, normalized)) {
+    return "standard";
+  }
   if (COMPLEX_SIGNALS.some((signal) => text.includes(signal))) {
     return "full";
   }
@@ -214,13 +227,13 @@ function resolveContextualIntent(
         `contextual:${name}-there`
       );
     }
-    const location = extractLocationFromPrompt(cleanPrompt);
+    const location = extractLocationFromPrompt(cleanPrompt, context.knownLocation);
     if (location && /\b(what about|how about|instead|now)\b/.test(normalized)) {
       const name = /\b(time|date|day|clock)\b/.test(normalized) && !/\bweather\b/.test(normalized) ? "time" : "weather";
       return instantDecision({ name, args: { location } }, `contextual:${name}-followup`);
     }
     if (previous === "weather" && /\b(just the temp|temperature only|how hot|how cold)\b/.test(normalized)) {
-      const loc = extractLocationFromPrompt(cleanPrompt) ?? context.knownLocation;
+      const loc = extractLocationFromPrompt(cleanPrompt, context.knownLocation) ?? context.knownLocation;
       return instantDecision(
         { name: "weather", args: loc ? { location: loc } : {} },
         "contextual:weather-temp"
@@ -372,15 +385,15 @@ function resolveGoToWebsiteIntent(cleanPrompt: string, normalized: string): Loca
   return null;
 }
 
-function resolveWeatherIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+function resolveWeatherIntent(cleanPrompt: string, normalized: string, knownLocation?: string | null): LocalToolInvocation | null {
   if (!/\b(weather|forecast|temperature|temp|rain|snow|wind|humidity|sunny|cloudy)\b/.test(normalized)) {
     return null;
   }
-  const location = extractLocationFromPrompt(cleanPrompt);
+  const location = extractLocationFromPrompt(cleanPrompt, knownLocation);
   return { name: "weather", args: location ? { location } : {} };
 }
 
-function resolveTimeIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+function resolveTimeIntent(cleanPrompt: string, normalized: string, knownLocation?: string | null): LocalToolInvocation | null {
   if (/\b(weather|forecast|temperature|temp|rain|snow|wind)\b/.test(normalized)) {
     return null;
   }
@@ -392,7 +405,7 @@ function resolveTimeIntent(cleanPrompt: string, normalized: string): LocalToolIn
   if (!asksTime) {
     return null;
   }
-  const location = extractLocationFromPrompt(cleanPrompt);
+  const location = extractLocationFromPrompt(cleanPrompt, knownLocation);
   return { name: "time", args: location ? { location } : {} };
 }
 
@@ -462,26 +475,151 @@ function instantDecision(invocation: LocalToolInvocation, reason: string): Inten
   };
 }
 
-function extractLocationFromPrompt(prompt: string): string | null {
-  const explicit = prompt.match(/\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})(?:[?.!]+)?$/i);
-  if (explicit) {
-    return cleanLocation(explicit[1]);
+/** True when the user asked for more than one tool-backed action in a single turn. */
+export function needsMultiToolLoop(cleanPrompt: string, normalized: string): boolean {
+  const text = ` ${normalized} `;
+  const categories = new Set<string>();
+
+  if (looksLikeWebSearchIntent(normalized)) {
+    categories.add("search");
   }
-  const embedded = prompt.match(
-    /\b(?:weather|forecast|temperature|temp|time|date)\b[^?.!]*\b(?:in|for|near|at)\s+([a-zA-Z][a-zA-Z\s,.-]{2,})/i
-  );
-  if (embedded) {
-    return cleanLocation(embedded[1]);
+  if (/\b(weather|forecast|temperature|temp|rain|snow|wind|humidity)\b/.test(normalized)) {
+    categories.add("weather");
   }
-  return null;
+  if (
+    /\b(what time|what s the time|current time|what date|what day)\b/.test(normalized) ||
+    (/\b(time|date|day)\b/.test(normalized) && /\b(what|current|now)\b/.test(normalized))
+  ) {
+    categories.add("time");
+  }
+  if (/\b(open|launch|start|pull up|bring up)\b/.test(normalized)) {
+    categories.add("open");
+  }
+  const openingSpotify = /\b(open|launch|start|pull up|bring up)\b.*\bspotify\b/.test(normalized);
+  if (
+    !openingSpotify &&
+    (/\b(play|pause|skip|resume|shuffle|repeat|volume)\b/.test(normalized) ||
+      (/\bspotify\b/.test(normalized) && !/\b(open|launch|start)\b/.test(normalized)))
+  ) {
+    categories.add("spotify");
+  }
+  if (/\b(remember|forget|memories)\b/.test(normalized)) {
+    categories.add("memory");
+  }
+  if (/\b(alarm|wake me|remind me)\b/.test(normalized)) {
+    categories.add("alarm");
+  }
+  if (/\b(screen|clipboard|folder|directory)\b/.test(normalized)) {
+    categories.add("device");
+  }
+
+  if (categories.size >= 2) {
+    return true;
+  }
+
+  const hasSequencer = /\b(then|and also|after that|afterwards|before that|first,|next,|finally)\b/.test(text);
+  const hasCompoundAnd =
+    /\band\b/.test(normalized) &&
+    /\b(weather|time|tell me|show me|give me|current|forecast)\b/.test(normalized);
+  if (!hasSequencer && !hasCompoundAnd) {
+    return false;
+  }
+
+  const hasSearchVerb =
+    looksLikeWebSearchIntent(normalized) ||
+    /\bsearch\b/.test(normalized) ||
+    /\b(find|look up)\b/.test(normalized);
+  const hasFollowUpAsk =
+    /\b(then|and also|and)\b.*\b(weather|time|tell me|show me|give me|current|forecast)\b/.test(normalized);
+  return hasSearchVerb && hasFollowUpAsk;
 }
 
-function cleanLocation(value: string): string | null {
-  const location = value
-    .replace(/\b(today|right now|currently|now|please|thanks|thank you)\b/gi, "")
-    .replace(/[?.!]+$/g, "")
-    .trim();
-  return location.length >= 3 ? location : null;
+function looksLikeWebSearchIntent(normalized: string): boolean {
+  if (/\bfind(?:\s+me)?\s+(?:the\s+)?(?:weather|forecast|temperature|time|date)\b/.test(normalized)) {
+    return false;
+  }
+  return (
+    /\b(search|google|look up|find info|find information)\b/.test(normalized) ||
+    /^search\b/.test(normalized) ||
+    /\b(things to do|fun things|what to do|cool things|places to visit|places to go|activities|attractions|restaurants)\b/.test(
+      normalized
+    ) ||
+    /\b(things happening|what s happening|going on|current events|local news|news in|happening in|happening there)\b/.test(
+      normalized
+    ) ||
+    /\bwhat are\b.*\b(happening|going on|events|news)\b/.test(normalized) ||
+    /\bfind(?:\s+me)?\s+(?:fun|cool|good|interesting|some)\b/.test(normalized)
+  );
+}
+
+function looksLikeCurrentEventsSearch(normalized: string): boolean {
+  return (
+    /\b(things happening|what s happening|going on|current events|local news|news in|happening in|happening there)\b/.test(
+      normalized
+    ) || /\bwhat are\b.*\b(happening|going on|events|news)\b/.test(normalized)
+  );
+}
+
+function webSearchPartLabel(normalized: string): string {
+  return looksLikeCurrentEventsSearch(normalized) ? "current local events" : "fun things to do";
+}
+
+export function promptNeedsMultiToolLoop(prompt: string): boolean {
+  const cleanPrompt = cleanDirectPrompt(prompt);
+  return needsMultiToolLoop(cleanPrompt, normalizeCommandText(cleanPrompt));
+}
+
+const MULTI_PART_COVERAGE: Record<string, RegExp> = {
+  "fun things to do":
+    /\b(things to do|attraction|museum|park|hike|restaurant|event|visit|activity|activities|festival|zoo|gallery|balloon|trail|downtown|old town|explore|check out|sandia|biopark|nob hill)\b/i,
+  "current local events":
+    /\b(event|events|festival|concert|happening|news|exhibit|opening|fair|market|rally|show|game|tonight|this weekend|annual|parade|conference|protest|celebration|schedule)\b/i,
+  "current weather":
+    /\b(degree|degrees|fahrenheit|celsius|cloud|rain|sunny|humidity|wind|forecast|weather|partly|clear|snow|hot|cold)\b/i,
+  "current time": /\b(\d{1,2}:\d{2}|am|pm|o'clock|time is|date is|today is|tonight|morning|afternoon|evening)\b/i
+};
+
+/** Human-readable parts the user asked for in a compound tool-using request. */
+export function getMultiPartRequestLabels(prompt: string): string[] {
+  const normalized = normalizeCommandText(cleanDirectPrompt(prompt));
+  const labels: string[] = [];
+  if (looksLikeWebSearchIntent(normalized)) {
+    labels.push(webSearchPartLabel(normalized));
+  }
+  if (/\b(weather|forecast|temperature|temp)\b/.test(normalized)) {
+    labels.push("current weather");
+  }
+  if (
+    /\b(what time|what s the time|current time|what date|what day)\b/.test(normalized) ||
+    (/\b(time|date|day)\b/.test(normalized) && /\b(what|current|now)\b/.test(normalized))
+  ) {
+    labels.push("current time");
+  }
+  return labels;
+}
+
+/** When a compound request was only partly answered, return a nudge for the model loop. */
+export function multiPartAnswerNudge(prompt: string, answer: string, toolsUsed: string[] = []): string | null {
+  if (!promptNeedsMultiToolLoop(prompt)) {
+    return null;
+  }
+  const labels = getMultiPartRequestLabels(prompt);
+  if (labels.length < 2) {
+    return null;
+  }
+  const missing = labels.filter((label) => !MULTI_PART_COVERAGE[label]?.test(answer));
+  if (!missing.length) {
+    return null;
+  }
+  const usedSearch = toolsUsed.some((name) => name === "web_search" || name === "deep_research");
+  const needsSearchSummary = missing.some((label) => label === "fun things to do" || label === "current local events");
+  const searchNote = usedSearch && needsSearchSummary
+    ? " Summarize the key findings from the web_search results."
+    : "";
+  return (
+    `Your answer only covered part of the request. The user also asked for: ${missing.join(" and ")}.` +
+    `${searchNote} Give one concise spoken answer that addresses every part using the tool results already above.`
+  );
 }
 
 function cleanDirectPrompt(prompt: string): string {

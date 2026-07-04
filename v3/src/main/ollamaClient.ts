@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
-import { isToolAllowedForScope, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
+import { isToolAllowedForScope, multiPartAnswerNudge, promptNeedsMultiToolLoop, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
 import { runNamedLocalTool } from "./localTools.js";
 import {
   buildFunctionDeclarations,
@@ -192,6 +192,9 @@ export function decideThinking(prompt: string, mode: ThinkMode = "auto"): ThinkD
   if (words > 45) {
     return { think: true, reason: "long multi-part request" };
   }
+  if (/\b(then|and also|after that|first,|next,)\b/.test(text) && /\b(search|weather|open|play|find)\b/.test(text)) {
+    return { think: true, reason: "sequenced multi-step request" };
+  }
   if (/\b(research|investigate|compare|analyze|implement|refactor|architect|debug|optimize)\b/.test(text)) {
     return { think: true, reason: "agentic task detected" };
   }
@@ -216,10 +219,17 @@ export async function generateWithOllama(
   // Adaptive thinking: complex requests get an internal reasoning pass and a
   // larger tool-loop budget; simple ones stay on the low-latency voice path.
   const decision = decideThinking(prompt, config.ollama?.think ?? "auto");
-  const maxSteps = decision.think ? 5 : 3;
+  const multiTool = promptNeedsMultiToolLoop(prompt);
+  const maxSteps = multiTool ? 6 : decision.think ? 5 : 3;
+  const useThinking = decision.think || multiTool;
+  let multiPartRetries = 0;
 
   for (let step = 0; step < maxSteps; step += 1) {
-    const message = await chat(messages, tools, config, { think: decision.think, thinkReason: decision.reason, context });
+    const message = await chat(messages, tools, config, {
+      think: useThinking,
+      thinkReason: multiTool ? "multi-part request" : decision.reason,
+      context
+    });
     const toolCalls = message.tool_calls ?? [];
 
     if (!toolCalls.length) {
@@ -228,6 +238,15 @@ export async function generateWithOllama(
         const verifiedOpen = await verifyOpenAppResponse(prompt, content, context);
         if (verifiedOpen) {
           return verifiedOpen;
+        }
+        if (multiTool && multiPartRetries < 2) {
+          const nudge = multiPartAnswerNudge(prompt, content, collectToolsUsed(messages));
+          if (nudge) {
+            multiPartRetries += 1;
+            messages.push({ role: "assistant", content });
+            messages.push({ role: "user", content: nudge });
+            continue;
+          }
         }
         return content;
       }
@@ -777,12 +796,32 @@ function buildMessages(prompt: string, context: ToolContext): OllamaMessage[] {
         context.userMemory.trim()
     });
   }
+  if (promptNeedsMultiToolLoop(prompt)) {
+    messages.push({
+      role: "user",
+      content:
+        "This request has multiple parts. Call every tool needed to satisfy each part before your final answer. " +
+        "You may issue several tool calls in one step when they are independent. " +
+        "Your final spoken answer must address every part — do not stop after only weather, only search, or only one topic. " +
+        "Use the place the user named in the prompt, not their remembered default location, when they differ."
+    });
+  }
   messages.push({ role: "user", content: prompt });
   return messages;
 }
 
 function toOutcomeCall(toolCall: OllamaToolCall): ToolFunctionCall {
   return { name: toolCall.function?.name, args: toolCall.function?.arguments ?? {} };
+}
+
+function collectToolsUsed(messages: OllamaMessage[]): string[] {
+  const used: string[] = [];
+  for (const message of messages) {
+    if (message.role === "tool" && message.tool_name) {
+      used.push(message.tool_name);
+    }
+  }
+  return used;
 }
 
 async function verifyOpenAppResponse(

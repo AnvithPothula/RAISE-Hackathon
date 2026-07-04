@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeUserIntent } from "../../src/main/intentRouter.js";
+import { multiPartAnswerNudge, routeUserIntent } from "../../src/main/intentRouter.js";
 import { buildFunctionDeclarations } from "../../src/main/toolRuntime.js";
 
 describe("routeUserIntent", () => {
@@ -84,6 +84,68 @@ describe("routeUserIntent", () => {
       name: "weather",
       args: { location: "Eagan, Minnesota" }
     });
+  });
+
+  it("routes compound search-and-weather prompts through the LLM tool loop", () => {
+    const prompt =
+      "Search finding cool things to do in Albuquerque, then tell me the current weather there.";
+    const decision = routeUserIntent(prompt, { knownLocation: "Eagan, Minnesota" });
+    expect(decision.difficulty).toBe("simple");
+    expect(decision.invocation).toBeNull();
+    expect(decision.llmToolScope).toBe("standard");
+    expect(decision.reason).toBe("multi-tool-loop");
+  });
+
+  it("routes find-activities-and-weather prompts through the LLM tool loop", () => {
+    const prompt = "Find me fun things to do in Albuquerque and tell me the current weather there.";
+    const decision = routeUserIntent(prompt, { knownLocation: "Eagan, Minnesota" });
+    expect(decision.difficulty).toBe("simple");
+    expect(decision.invocation).toBeNull();
+    expect(decision.llmToolScope).toBe("standard");
+    expect(decision.reason).toBe("multi-tool-loop");
+  });
+
+  it("still routes simple weather instantly", () => {
+    const decision = routeUserIntent("find me the weather in Albuquerque");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation?.name).toBe("weather");
+    expect(decision.invocation?.args).toEqual({ location: "Albuquerque" });
+  });
+
+  it("routes current-events-and-weather prompts through the LLM tool loop", () => {
+    const prompt =
+      "What are current things happening in Albuquerque, New Mexico? And also what is the current weather there?";
+    const decision = routeUserIntent(prompt, { knownLocation: "Eagan, Minnesota" });
+    expect(decision.difficulty).toBe("simple");
+    expect(decision.invocation).toBeNull();
+    expect(decision.llmToolScope).toBe("standard");
+    expect(decision.reason).toBe("multi-tool-loop");
+  });
+});
+
+describe("multiPartAnswerNudge", () => {
+  it("nudges when only weather was answered for a compound request", () => {
+    const prompt = "Find fun things to do in Albuquerque and also tell me the current weather there.";
+    const answer = "The current weather in Albuquerque is 97 degrees Fahrenheit, with partly cloudy conditions.";
+    const nudge = multiPartAnswerNudge(prompt, answer, ["get_weather", "web_search"]);
+    expect(nudge).toMatch(/fun things to do/i);
+    expect(nudge).toMatch(/web_search/i);
+  });
+
+  it("returns null when every part was covered", () => {
+    const prompt = "Find fun things to do in Albuquerque and also tell me the current weather there.";
+    const answer =
+      "Try the Sandia Peak Tramway and Old Town for activities. It is 97 degrees and partly cloudy right now.";
+    expect(multiPartAnswerNudge(prompt, answer, ["get_weather", "web_search"])).toBeNull();
+  });
+
+  it("nudges when only weather was answered for a current-events compound request", () => {
+    const prompt =
+      "What are current things happening in Albuquerque, New Mexico? And also what is the current weather there?";
+    const answer =
+      "Current weather in Albuquerque, New Mexico: partly cloudy, 97 degrees Fahrenheit, feels like 95.";
+    const nudge = multiPartAnswerNudge(prompt, answer, ["get_weather"]);
+    expect(nudge).toMatch(/current local events/i);
   });
 });
 
