@@ -203,7 +203,7 @@ export const FUNCTION_DECLARATIONS = [
   {
     name: "deep_research",
     description:
-      "Run an iterative self-looping research agent for open-ended or comparative questions that need several web searches. It plans queries, searches, reads results, reflects on gaps, and searches again until it can answer with sources. Use for requests like 'research X', 'compare A and B', buying decisions, or multi-part factual questions. Do not use for a single quick fact — use web_search for that.",
+      "Enter iterative research mode: a self-looping agent for open-ended, comparative, or long multi-step tasks that need several tool calls to finish. At the start it chooses its own iteration budget, then it plans, calls tools (web searches, computation, and others), reads results, reflects on gaps, and loops again — and it will not stop until the whole task is genuinely complete (accidental-exit protection). Use for requests like 'research X', 'compare A and B', buying decisions, multi-part factual questions, or any task that clearly needs many steps to complete. Do not use for a single quick fact — use web_search for that.",
     parameters: {
       type: "object",
       properties: {

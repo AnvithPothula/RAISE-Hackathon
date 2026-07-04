@@ -290,40 +290,122 @@ async function runLocalSubAgent(task: string, config: AppConfig, context: ToolCo
   return cleanText(final.content) || "Sub-agent finished its tool loop.";
 }
 
-const RESEARCH_MAX_ROUNDS = 4;
+// The model chooses its own iteration budget at the start of research mode.
+// These bound that choice so a bad plan can neither under- nor over-commit.
+const RESEARCH_MIN_ROUNDS = 2;
+const RESEARCH_MAX_ROUNDS = 8; // upper bound the model may choose up front
+const RESEARCH_DEFAULT_ROUNDS = 4; // fallback when the planning step fails
+// Absolute ceiling on total rounds, including any extra rounds granted by the
+// accidental-exit guard. Bounds worst-case model calls regardless of the plan.
+const RESEARCH_HARD_CAP = 12;
+// How many times the exit guard may override an early "I'm done" before the
+// answer is accepted anyway, so completion checks cannot loop forever.
+const RESEARCH_MAX_OVERRIDES = 3;
+// Consecutive empty/failed rounds tolerated before the loop bails out. Keeps a
+// flaky model or transport from spinning against the hard cap doing nothing.
+const RESEARCH_MAX_EMPTY_STREAK = 2;
+
+type ResearchPlan = { rounds: number; plan: string };
 
 /**
- * Self-looping research agent, fully on the local model. Each round Gemma
- * searches, reads the results, then explicitly reflects on what is still
- * missing and decides for itself whether to loop again or synthesize. The
- * reflection step is what makes it a self-loop rather than a fixed pipeline.
+ * Self-looping research / iteration agent, fully on the local model. Before any
+ * work the model picks its own round budget (a plan step), then each round it
+ * calls tools, studies results, and reflects on gaps. Two accidental-exit
+ * guards keep it from bailing on a long task: (1) it may not stop before its
+ * chosen budget unless a completion check confirms the task is genuinely done,
+ * and (2) a thrown chat/tool error or an empty response retries instead of
+ * ending the loop. An absolute hard cap bounds total model calls.
  */
 async function runDeepResearch(task: string, config: AppConfig, context: ToolContext): Promise<string> {
+  const { rounds, plan } = await planResearch(task, config, context);
+  context.onToolEvent?.("start", {
+    name: "deep_research",
+    text: `Planned ${rounds} research round${rounds === 1 ? "" : "s"}${plan ? `: ${plan}` : ""}`
+  });
+
   const researchSystem =
     `${readSystemPrompt(context.mcp)}\n\n` +
-    "You are in deep research mode. Work in rounds: call web_search with focused queries " +
-    "(you may issue several searches in one round), study the results, and after each round " +
-    "decide whether you have enough evidence to answer. If information is missing or " +
-    "conflicting, search again with sharper queries. When you have enough, produce a final " +
-    "answer in plain spoken prose with the key sources named. Never invent sources.";
+    "You are in deep research / iteration mode. " +
+    `You have committed to a budget of ${rounds} rounds for this task${plan ? ` (plan: ${plan})` : ""}. ` +
+    "Each round, call whatever tools you need — web_search with focused queries, run_code for computation, " +
+    "or other available tools — and you may issue several tool calls in a single round. Study the results and " +
+    "reflect on what is still missing. Do NOT stop or give a final answer until EVERY part of the task is " +
+    "genuinely complete with evidence; partial progress is not a valid stopping point. When the whole task is " +
+    "done, produce a final answer in plain spoken prose naming the key sources. Never invent sources.";
   const messages: OllamaMessage[] = [
     { role: "system", content: researchSystem },
     { role: "user", content: `Research task: ${task}` }
   ];
   const tools = buildTools(context).filter((tool) => !isLoopToolName((tool.function as { name?: string }).name));
 
-  for (let round = 0; round < RESEARCH_MAX_ROUNDS; round += 1) {
-    const message = await chat(messages, tools, config, { think: true, thinkReason: "deep research", context });
-    const toolCalls = message.tool_calls ?? [];
-    if (!toolCalls.length) {
-      const answer = cleanText(message.content);
-      if (answer) {
-        return answer;
+  let overrides = 0;
+  let emptyStreak = 0;
+  let lastAnswer = "";
+
+  for (let round = 0; round < RESEARCH_HARD_CAP; round += 1) {
+    let message: { content?: string; tool_calls?: OllamaToolCall[] };
+    try {
+      message = await chat(messages, tools, config, {
+        think: true,
+        thinkReason: `deep research ${round + 1}/${rounds}`,
+        context
+      });
+    } catch (error) {
+      // Accidental-exit protection: a transient model/transport error must not
+      // end a long research task. Retry a bounded number of times.
+      emptyStreak += 1;
+      if (emptyStreak > RESEARCH_MAX_EMPTY_STREAK) {
+        break;
       }
-      messages.push({ role: "user", content: "Give your research conclusion now, with sources." });
+      messages.push({
+        role: "user",
+        content: `A step failed (${String(error)}). Retry the previous action or continue the research.`
+      });
       continue;
     }
 
+    const toolCalls = message.tool_calls ?? [];
+
+    if (!toolCalls.length) {
+      const answer = cleanText(message.content);
+      if (!answer) {
+        // Empty response guard: nudge once or twice, then give up gracefully.
+        emptyStreak += 1;
+        if (emptyStreak > RESEARCH_MAX_EMPTY_STREAK) {
+          break;
+        }
+        messages.push({
+          role: "user",
+          content: "Your response was empty. Continue researching with a tool call, or give the final sourced answer."
+        });
+        continue;
+      }
+
+      emptyStreak = 0;
+      lastAnswer = answer;
+
+      // Accidental-exit protection: while still inside the chosen budget, do not
+      // accept an early finish unless a completion check confirms the task is
+      // fully done. The override counter bounds how often this can force a loop.
+      const withinBudget = round + 1 < Math.min(rounds, RESEARCH_HARD_CAP);
+      if (withinBudget && overrides < RESEARCH_MAX_OVERRIDES) {
+        const check = await verifyResearchComplete(task, answer, config, context);
+        if (check.complete) {
+          return answer;
+        }
+        overrides += 1;
+        messages.push({
+          role: "user",
+          content:
+            `The task is not complete yet. Still missing: ${check.reason} ` +
+            "Do not stop — call another tool to fill that gap, then continue."
+        });
+        continue;
+      }
+      return answer;
+    }
+
+    emptyStreak = 0;
     messages.push({ role: "assistant", content: message.content ?? "", tool_calls: toolCalls });
     const outcomes = await Promise.all(
       toolCalls.slice(0, 4).map((toolCall) => executeToolCall(toOutcomeCall(toolCall), context))
@@ -339,13 +421,105 @@ async function runDeepResearch(task: string, config: AppConfig, context: ToolCon
     messages.push({
       role: "user",
       content:
-        `Reflection after round ${round + 1} of ${RESEARCH_MAX_ROUNDS}: list what you have learned so far in one sentence, ` +
-        "then either call web_search again to fill a specific gap, or give the final sourced answer."
+        `Reflection after round ${round + 1} of ${rounds}: list what you have learned so far in one sentence, ` +
+        "then either call another tool to fill a specific gap, or — only if the whole task is done — give the final sourced answer."
     });
   }
 
+  if (lastAnswer) {
+    return lastAnswer;
+  }
   const final = await chat(messages, undefined, config, { think: true, thinkReason: "research synthesis", context });
   return cleanText(final.content) || "Research loop ended without a conclusion.";
+}
+
+/**
+ * Planning step run once at the start of research mode. The model estimates how
+ * many rounds of tool use the task needs and returns a small JSON budget, which
+ * is clamped to a safe range. This is the "as it chooses at the start" budget.
+ */
+async function planResearch(task: string, config: AppConfig, context: ToolContext): Promise<ResearchPlan> {
+  const messages: OllamaMessage[] = [
+    {
+      role: "system",
+      content:
+        "You are about to start a multi-step research/iteration task. First choose an iteration budget: estimate " +
+        "how many rounds of tool use (web searches, reads, calculations) the task realistically needs to be answered " +
+        `thoroughly. Reply with ONLY compact JSON: {"rounds": <integer between ${RESEARCH_MIN_ROUNDS} and ${RESEARCH_MAX_ROUNDS}>, ` +
+        '"plan": "<one short sentence describing your approach>"}. Choose more rounds for broad, comparative, or ' +
+        "multi-part tasks, and fewer for narrow ones."
+    },
+    { role: "user", content: `Task: ${task}` }
+  ];
+  try {
+    const message = await chat(messages, undefined, config, { think: false, thinkReason: "research plan", context });
+    const parsed = parseResearchPlan(cleanText(message.content));
+    if (parsed) {
+      return { rounds: clampRounds(parsed.rounds), plan: parsed.plan ?? "" };
+    }
+  } catch {
+    // Fall through to the default budget if planning fails.
+  }
+  return { rounds: RESEARCH_DEFAULT_ROUNDS, plan: "" };
+}
+
+/**
+ * Strict completion auditor used by the accidental-exit guard. Given the task
+ * and a proposed final answer, it returns whether the task is fully done and,
+ * if not, what is still missing. If the audit call itself fails, the answer is
+ * accepted so a broken auditor cannot trap the loop.
+ */
+async function verifyResearchComplete(
+  task: string,
+  answer: string,
+  config: AppConfig,
+  context: ToolContext
+): Promise<{ complete: boolean; reason: string }> {
+  const messages: OllamaMessage[] = [
+    {
+      role: "system",
+      content:
+        "You are a strict completion auditor. Given a TASK and a PROPOSED ANSWER, decide whether the answer fully " +
+        "and accurately completes every part of the task with adequate evidence. Reply with ONLY 'COMPLETE' if it is " +
+        "fully done, or 'CONTINUE: <specifically what is still missing>' if it is not."
+    },
+    { role: "user", content: `TASK:\n${task}\n\nPROPOSED ANSWER:\n${answer}` }
+  ];
+  try {
+    const message = await chat(messages, undefined, config, { think: false, thinkReason: "completion check", context });
+    const text = cleanText(message.content);
+    if (/^\s*complete\b/i.test(text)) {
+      return { complete: true, reason: "" };
+    }
+    const reason = text.replace(/^\s*continue\s*:?\s*/i, "").trim();
+    return { complete: false, reason: reason || "some parts of the task are still unaddressed." };
+  } catch {
+    return { complete: true, reason: "" };
+  }
+}
+
+export function parseResearchPlan(text: string): { rounds?: number; plan?: string } | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) {
+    return null;
+  }
+  try {
+    const obj = JSON.parse(match[0]) as { rounds?: unknown; plan?: unknown };
+    const rounds = typeof obj.rounds === "number" ? obj.rounds : Number(obj.rounds);
+    return {
+      rounds: Number.isFinite(rounds) ? rounds : undefined,
+      plan: typeof obj.plan === "string" ? obj.plan : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clampRounds(rounds: number | undefined): number {
+  if (!rounds || !Number.isFinite(rounds)) {
+    return RESEARCH_DEFAULT_ROUNDS;
+  }
+  return Math.max(RESEARCH_MIN_ROUNDS, Math.min(RESEARCH_MAX_ROUNDS, Math.round(rounds)));
 }
 
 function isLoopToolName(name: string | undefined): boolean {
@@ -417,12 +591,26 @@ export async function analyzeImageWithOllama(
  */
 export async function warmUpModel(config?: AppConfig): Promise<boolean> {
   try {
-    const model = await resolveInstalledOllamaModel(config);
-    const response = await fetch(`${resolveOllamaUrl(config)}/api/generate`, {
+    // Prime with the real system prompt + built-in tool schemas so Ollama caches
+    // that (constant) prefix's KV. Real requests then skip re-evaluating it,
+    // which is the dominant cost of first-token latency on larger models.
+    const tools = buildFunctionDeclarations().map((declaration) => ({ type: "function", function: declaration }));
+    const response = await fetch(`${resolveOllamaUrl(config)}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model, keep_alive: KEEP_ALIVE })
+      body: JSON.stringify({
+        model: resolveOllamaModel(config),
+        keep_alive: KEEP_ALIVE,
+        think: false,
+        stream: false,
+        tools,
+        messages: [
+          { role: "system", content: readSystemPrompt() },
+          { role: "user", content: "hi" }
+        ],
+        options: { num_predict: 1, temperature: 1.0, top_p: 0.95, top_k: 64 }
+      })
     });
     return response.ok;
   } catch {

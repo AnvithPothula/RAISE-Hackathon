@@ -432,4 +432,47 @@ describe("resolveDirectLocalTool", () => {
     expect(resolveDirectLocalTool("what is open source software")).toBeNull();
     expect(resolveDirectLocalTool("open the pod bay doors")).toBeNull();
   });
+
+  it("answers capability questions instantly without the model", () => {
+    expect(resolveDirectLocalTool("What can you do?")).toEqual({ name: "capabilities", args: {} });
+    expect(resolveDirectLocalTool("what can you do")).toEqual({ name: "capabilities", args: {} });
+    expect(resolveDirectLocalTool("what are you capable of")).toEqual({ name: "capabilities", args: {} });
+    // Not a capability question — must not hijack.
+    expect(resolveDirectLocalTool("what is open source software")).toBeNull();
+  });
+
+  it("routes screen questions straight to local vision", () => {
+    // Trailing punctuation is stripped by the direct-prompt cleaner.
+    expect(resolveDirectLocalTool("What's on my screen?")).toEqual({
+      name: "screen",
+      args: { query: "What's on my screen" }
+    });
+    expect(resolveDirectLocalTool("read my screen")).toEqual({ name: "screen", args: { query: "read my screen" } });
+    expect(resolveDirectLocalTool("what am I looking at")).toEqual({
+      name: "screen",
+      args: { query: "what am I looking at" }
+    });
+    // A normal "open" request must not be captured as a screen request.
+    expect(resolveDirectLocalTool("open excel")).toEqual({ name: "open_app", args: { app: "excel" } });
+  });
+
+  it("routes generic play requests to Spotify without the model", () => {
+    expect(resolveDirectLocalTool("Play something relaxing")).toEqual({
+      name: "spotify",
+      args: { action: "play", kind: "track", query: "something relaxing" }
+    });
+    expect(resolveDirectLocalTool("play some jazz")).toEqual({
+      name: "spotify",
+      args: { action: "play", kind: "track", query: "jazz" }
+    });
+  });
+});
+
+describe("capabilities tool", () => {
+  it("returns a spoken capability summary with no model call", async () => {
+    const result = await runNamedLocalTool("capabilities", {}, null);
+    expect(result.name).toBe("capabilities");
+    expect(result.text.toLowerCase()).toContain("on-device");
+    expect(result.text.toLowerCase()).toContain("open apps");
+  });
 });

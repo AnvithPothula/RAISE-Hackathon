@@ -98,6 +98,32 @@ Real failures caught running `npm run dev` and fixed:
 | **TTFT 20–26s** per prompt | No `keep_alive` (model reloaded each turn) + 48 tools inflating prompt eval | `keep_alive: 30m` + startup warm-up (`warmUpModel`); MCP trimmed 48→25 tools. **Measured TTFT 20s → 1.7s, tok/s 11 → 17** |
 | System prompt said "Windows voice assistant" on a Mac | Stale copy | Rewritten cross-platform, adds `run_code`/`deep_research`, anti-"I can't" steer |
 
+### Second dev-run: quick-reply chips "don't work", still slow ✅
+Root cause was **latency + turn staleness**: on this (bandwidth-limited) Mac, `gemma4:12b` runs ~6–9 tok/s with 20s+ TTFT, so clicking multiple chips (or talking) made each new turn cancel the previous one (`stale gemma response ignored`) before it returned. Only instant direct-tool matches (e.g. "open messages") completed. Fixes:
+
+| Chip / command | Before | After |
+|----------------|--------|-------|
+| "What can you do?" | 20s LLM call, often cancelled | **Instant** canned capability summary (`capabilities`, no model) |
+| "Open my calendar" | worked (direct) | still direct `open_app` |
+| "Play something relaxing" | LLM, slow | **Instant** direct `control_spotify` play (new generic "play X" matcher) |
+| "Turn on do not disturb" | **no tool existed** → refusal | new `set_do_not_disturb` tool (mac Shortcut / win focus-assist / linux gsettings) + instant direct matcher |
+| "Summarize my clipboard" | LLM | still LLM (needs clipboard read+summarize); faster via warm-up + smaller model |
+
+Speed work: `warmUpModel` now pre-evaluates the real system-prompt + tool prefix at startup (caches the KV so first-token is fast, not just weight-load); system MCP trimmed 11→8 tools (dropped duplicate `get_datetime`, risky `write_text_file`, `read_text_file`). Pulling `gemma4:e2b`/`e4b` for a 3–5× speedup — switch via **Settings → Low resource mode** (uses `gemma4:e2b`) once the pull finishes. Tests: 51 pass, typecheck clean.
+
+### Third pass: only ship features that work with zero user setup ✅
+Rule applied: every quick-reply chip under the input must be something `gemma4:12b` can actually do on the demo machine with **no extra user steps**. Audited each:
+
+| Chip | Feature | Works no-setup? |
+|------|---------|-----------------|
+| "What can you do?" | `capabilities` (instant, local) | ✅ |
+| "What's on my screen?" | local Gemma 4 vision via direct `screen` matcher (one on-device vision call, no tool-selection round trip) | ✅ (macOS asks for Screen Recording permission once — an OS gate for *any* screen feature, one click, not a workaround) |
+| "Open my calendar" | direct `open_app` (instant) | ✅ |
+| "Summarize my clipboard" | clipboard read + local summary | ✅ |
+| "Play something relaxing" | direct `control_spotify` play | ✅ (graceful "log in" prompt if Spotify not authed) |
+
+**Removed "Turn on do not disturb" entirely.** macOS 26.5 has no reliable no-setup way to toggle Focus/DND: the legacy `defaults`+`killall` method is dead, the `shortcuts` CLI can't create a shortcut programmatically, and UI automation needs Accessibility permission. Per the "don't list features that aren't possible" rule, the DND tool, declaration, matcher, and chip were all deleted rather than shipping a shortcut-dependent stub. Replaced with the on-device **screen vision** chip — the single most on-theme feature for this track (local multimodal Gemma). Tests: 51 pass, both TS projects typecheck clean.
+
 ### P0 — Gemma on-device brain ✅
 | # | Task | Status |
 |---|------|--------|

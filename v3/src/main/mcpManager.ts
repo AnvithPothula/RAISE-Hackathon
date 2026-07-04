@@ -312,7 +312,14 @@ function mergeStdioEnv(env: Record<string, string> | undefined): Record<string, 
       base[key] = value;
     }
   }
-  return { ...base, ...env };
+  // Empty config values act as documentation only: never clobber a real value
+  // that was already provided via the process environment (e.g. loaded from .env).
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== "" || base[key] === undefined) {
+      base[key] = value;
+    }
+  }
+  return base;
 }
 
 function normalizeToolResult(response: unknown): McpToolResult {

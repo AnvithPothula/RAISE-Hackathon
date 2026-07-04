@@ -24,7 +24,8 @@
     "baseUrl": "http://127.0.0.1:11434",
     "model": "gemma4:12b",
     "lowResourceModel": "gemma4:e2b",
-    "think": "off"
+    "think": "auto",
+    "thinkLevel": "low"
   },
   "gradium": {
     "baseWsUrl": "wss://api.gradium.ai/api",
@@ -74,7 +75,8 @@
         "args": [
           "-y",
           "@modelcontextprotocol/server-filesystem",
-          "."
+          "E:\\",
+          "C:\\Users\\Scuyul"
         ]
       },
       {
@@ -89,6 +91,72 @@
         ],
         "env": {
           "MEMORY_FILE_PATH": ".mcp-memory.json"
+        }
+      },
+      {
+        "name": "sequential-thinking",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-sequential-thinking"
+        ]
+      },
+      {
+        "name": "puppeteer",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-puppeteer"
+        ]
+      },
+      {
+        "name": "time",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "time-mcp"
+        ]
+      },
+      {
+        "name": "context7",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@upstash/context7-mcp"
+        ]
+      },
+      {
+        "name": "github",
+        "enabled": false,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-github"
+        ],
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": ""
+        }
+      },
+      {
+        "name": "brave-search",
+        "enabled": false,
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-brave-search"
+        ],
+        "env": {
+          "BRAVE_API_KEY": ""
         }
       }
     ]
