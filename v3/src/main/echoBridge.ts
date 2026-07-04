@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { Duplex } from "node:stream";
 import { URL } from "node:url";
-import { appRoot, resolveWorkerPython } from "./config.js";
+import { appRoot, caBundleEnv, resolveWorkerPython } from "./config.js";
 
 type EchoPromptContext = {
   deviceId: string;
@@ -173,6 +173,7 @@ class EchoRealtimeProcessor extends EventEmitter {
     const python = resolveWorkerPython();
     const env = {
       ...process.env,
+      ...caBundleEnv(),
       PYTHONPATH: path.join(appRoot, "src"),
       PYTHOS_CONFIG: path.join(appRoot, "config.json")
     };
@@ -869,6 +870,7 @@ function runPythonJson(args: string[]): Promise<Record<string, unknown>> {
   const python = resolveWorkerPython();
   const env = {
     ...process.env,
+    ...caBundleEnv(),
     PYTHONPATH: path.join(appRoot, "src"),
     PYTHOS_CONFIG: path.join(appRoot, "config.json")
   };

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,4 +82,40 @@ export function resolveWorkerPython(): string {
     return venvPython;
   }
   return process.platform === "win32" ? "python" : "python3";
+}
+
+let cachedCaBundle: string | null | undefined;
+
+/**
+ * Absolute path to certifi's CA bundle, or null if unavailable.
+ *
+ * macOS Python.framework builds ship without a usable system CA store, so the
+ * Python worker's TLS handshake to api.gradium.ai fails with
+ * CERTIFICATE_VERIFY_FAILED. Exposing this bundle as SSL_CERT_FILE in the
+ * worker's spawn env fixes it. Resolved once via the venv Python and cached.
+ */
+export function resolveCaBundle(): string | null {
+  if (cachedCaBundle !== undefined) {
+    return cachedCaBundle;
+  }
+  try {
+    const output = execFileSync(
+      resolveWorkerPython(),
+      ["-c", "import certifi,sys;sys.stdout.write(certifi.where())"],
+      { encoding: "utf-8", timeout: 10_000 }
+    ).trim();
+    cachedCaBundle = output.length > 0 ? output : null;
+  } catch {
+    cachedCaBundle = null;
+  }
+  return cachedCaBundle;
+}
+
+/** Spawn env additions that make the Python worker's TLS trust certifi's CA bundle. */
+export function caBundleEnv(): Record<string, string> {
+  if (process.env.SSL_CERT_FILE) {
+    return {}; // respect an explicit override (e.g. from .env)
+  }
+  const bundle = resolveCaBundle();
+  return bundle ? { SSL_CERT_FILE: bundle } : {};
 }
