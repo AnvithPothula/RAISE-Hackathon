@@ -1,5 +1,26 @@
-import { Activity, Cpu, Mic, MicOff, Radio, Save, Send, Settings, Square, Trash2, WifiOff, Wrench } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  Bot,
+  Cpu,
+  Download,
+  History,
+  MessageSquare,
+  Mic,
+  MicOff,
+  Radio,
+  Save,
+  Search,
+  Send,
+  Settings,
+  Square,
+  Trash2,
+  WifiOff,
+  Wrench,
+  X,
+  Zap
+} from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppConfig,
   AssistantState,
@@ -13,13 +34,33 @@ import type {
 } from "../shared/types";
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
 type VoiceAction = "wakeword" | "mic";
 type NodeStatus = "idle" | "listening" | "thinking" | "speaking" | "error";
+
 type ConnectedNode = {
   id: string;
   label: string;
   status: NodeStatus;
   lastSeen: number;
+};
+
+type SettingsTab = "general" | "audio" | "tools" | "paths";
+
+const QUICK_REPLIES = [
+  "What can you do?",
+  "Open my calendar",
+  "Play something relaxing",
+  "Summarize my clipboard",
+  "Turn on do not disturb"
+];
+
+const TOOL_ICONS: Record<string, React.ElementType> = {
+  spotify: Zap,
+  system: Settings,
+  browser: Activity,
+  file: History,
+  default: Wrench
 };
 
 export function App() {
@@ -33,6 +74,7 @@ export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [pendingVoiceAction, setPendingVoiceAction] = useState<VoiceAction | null>(null);
   const [wakeSessionArmed, setWakeSessionArmed] = useState(false);
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
@@ -42,7 +84,17 @@ export function App() {
   const [toolFlashActive, setToolFlashActive] = useState(false);
   const [modelStats, setModelStats] = useState<ModelStats | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [inspectingNode, setInspectingNode] = useState<ConnectedNode | null>(null);
+  const [streamingText, setStreamingText] = useState<{ id: string; text: string } | null>(null);
+  const [startTime] = useState(() => Date.now());
+  const [showStats, setShowStats] = useState(false);
+  const [sideWidth, setSideWidth] = useState(390);
+  const [isResizing, setIsResizing] = useState(false);
   const toolFlashTimer = useRef<number | null>(null);
+  const promptRef = useRef<HTMLInputElement>(null);
+  const resizeStartX = useRef(0);
+  const resizeStartWidth = useRef(sideWidth);
 
   useEffect(() => {
     if (!window.pythos) {
@@ -51,10 +103,11 @@ export function App() {
       return;
     }
 
-    window.pythos.getConfig().then((config) => {
-      setConfig(config);
-      setSettingsDraft(config);
-      setConfigSummary(formatRuntimeSummary(config, piStatus));
+    window.pythos.getConfig().then((loadedConfig) => {
+      setConfig(loadedConfig);
+      setSettingsDraft(loadedConfig);
+      setShowStats(Boolean(loadedConfig.gui?.showPerformanceStats));
+      setConfigSummary(formatRuntimeSummary(loadedConfig, piStatus));
     }).catch((reason: unknown) => {
       setError(`Config load failed: ${String(reason)}`);
       setState("error");
@@ -73,7 +126,7 @@ export function App() {
       });
     });
 
-    window.pythos.getMcpStatus().then((status) => {
+    window.pythos.getMcpStatus?.().then((status) => {
       setMcpStatus(status);
     }).catch(() => {
       setMcpStatus({ enabled: false, servers: [] });
@@ -82,13 +135,37 @@ export function App() {
     const offWorker = window.pythos.onWorkerEvent(handleWorkerEvent);
     const offPi = window.pythos.onPiEvent(handlePiEvent);
     const offPiStatus = window.pythos.onPiStatus((status) => setPiStatus(status));
-    const offMcpStatus = window.pythos.onMcpStatus((status) => setMcpStatus(status));
+    const offMcpStatus = window.pythos.onMcpStatus?.((status) => setMcpStatus(status)) ?? (() => {});
     const offState = window.pythos.onAssistantState((next) => setState(next as AssistantState));
     const offStats = window.pythos.onModelStats((stats) => setModelStats(stats));
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
+        if (event.key === "Escape") {
+          (event.target as HTMLElement).blur();
+        }
+        return;
+      }
+      if (event.key === " " || event.code === "Space") {
+        event.preventDefault();
+        toggleMic();
+      } else if (event.key === "w" || event.key === "W") {
+        toggleWakeword();
+      } else if (event.key === "Escape") {
+        stopAll();
+      } else if (event.key === "/" || event.key === "?") {
+        event.preventDefault();
+        promptRef.current?.focus();
+      } else if (event.key === "," || event.key === "<") {
+        openSettings();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
 
     return () => {
       offWorker();
@@ -99,6 +176,7 @@ export function App() {
       offStats();
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("keydown", onKeyDown);
       if (toolFlashTimer.current !== null) {
         window.clearTimeout(toolFlashTimer.current);
       }
@@ -110,6 +188,26 @@ export function App() {
       setConfigSummary(formatRuntimeSummary(config, piStatus));
     }
   }, [config, piStatus]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const onMove = (event: MouseEvent) => {
+      const delta = resizeStartX.current - event.clientX;
+      const next = Math.min(Math.max(resizeStartWidth.current + delta, 300), 600);
+      setSideWidth(next);
+      document.documentElement.style.setProperty("--side-width", `${next}px`);
+    };
+
+    const onUp = () => {
+      setIsResizing(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [isResizing]);
 
   function handleWorkerEvent(event: WorkerEvent) {
     if (event.type === "state") {
@@ -133,10 +231,13 @@ export function App() {
     if (event.type === "final_transcript") {
       setPendingVoiceAction(null);
       setPartial("");
-      setConversation((items) => [
-        ...items,
-        { id: nowId(), role: "user", text: event.payload.text, timestamp: Date.now() }
-      ]);
+      setConversation((items) => {
+        const next = [
+          ...items,
+          { id: nowId(), role: "user" as const, text: event.payload.text, timestamp: Date.now() }
+        ];
+        return trimItems(next, config);
+      });
       setState("thinking");
       return;
     }
@@ -171,22 +272,40 @@ export function App() {
           setState("thinking");
         }
       }
-      if (type === "message_update" || type === "message_end") {
+      if (type === "message_update") {
         const text = extractAssistantText(payload);
         if (text) {
           setError(null);
-          setConversation((items) => upsertAssistant(items, text));
+          setStreamingText((current) => {
+            const id = current?.id ?? nowId();
+            return { id, text };
+          });
+        }
+      }
+      if (type === "message_end") {
+        const text = extractAssistantText(payload);
+        if (text || streamingText) {
+          setError(null);
+          setConversation((items) => {
+            const next = upsertAssistant(items, text || streamingText?.text || "", streamingText?.id);
+            return trimItems(next, config);
+          });
+          setStreamingText(null);
         }
       }
       if (type === "tool_execution_start") {
         triggerToolFlash();
-        setConversation((items) => [
-          ...items,
-          { id: nowId(), role: "tool", text: formatToolConversationText(payload), timestamp: Date.now() }
-        ]);
+        setConversation((items) => {
+          const next = [
+            ...items,
+            { id: nowId(), role: "tool" as const, text: formatToolConversationText(payload), timestamp: Date.now() }
+          ];
+          return trimItems(next, config);
+        });
       }
       if (type === "turn_end") {
         setState("idle");
+        setStreamingText(null);
       }
     }
   }
@@ -211,7 +330,21 @@ export function App() {
     if (state === "speaking") return "Speaking";
     if (state === "error") return "Needs attention";
     return "Stopped";
-  }, [partial, state]);
+  }, [partial, state, config]);
+
+  const filteredConversation = useMemo(() => {
+    if (!searchQuery.trim()) return conversation;
+    const query = searchQuery.toLowerCase();
+    return conversation.filter((item) => item.text.toLowerCase().includes(query));
+  }, [conversation, searchQuery]);
+
+  const filteredToolEvents = useMemo(() => {
+    if (!searchQuery.trim()) return toolEvents;
+    const query = searchQuery.toLowerCase();
+    return toolEvents.filter((event) => summarizeEvent(event.payload).toLowerCase().includes(query));
+  }, [toolEvents, searchQuery]);
+
+  const uptime = useMemo(() => formatDurationMs(Date.now() - startTime), [startTime, state]);
 
   const toggleWakeword = () => {
     if (!window.pythos) {
@@ -270,6 +403,7 @@ export function App() {
     window.pythos.abortPi();
     setWakeSessionArmed(false);
     setPendingVoiceAction(null);
+    setStreamingText(null);
     setState("idle");
   };
 
@@ -281,14 +415,15 @@ export function App() {
       return;
     }
     const prompt = typedPrompt.trim();
-    if (!prompt) {
-      return;
-    }
+    if (!prompt) return;
     setTypedPrompt("");
     setError(null);
     setWakeSessionArmed(false);
     setPendingVoiceAction(null);
-    setConversation((items) => [...items, { id: nowId(), role: "user", text: prompt, timestamp: Date.now() }]);
+    setConversation((items) => {
+      const next = [...items, { id: nowId(), role: "user" as const, text: prompt, timestamp: Date.now() }];
+      return trimItems(next, config);
+    });
     setState("thinking");
     window.pythos.promptAssistant(prompt).catch((reason: unknown) => {
       setError(`Typed prompt failed: ${String(reason)}`);
@@ -296,36 +431,92 @@ export function App() {
     });
   };
 
+  const sendQuickReply = (text: string) => {
+    setTypedPrompt(text);
+    setTimeout(() => {
+      promptRef.current?.form?.requestSubmit();
+    }, 0);
+  };
+
+  const clearContext = () => {
+    setConversation([]);
+    setToolEvents([]);
+    setStreamingText(null);
+    window.pythos?.clearAssistantContext();
+  };
+
+  const exportTranscript = () => {
+    const data = {
+      exportedAt: new Date().toISOString(),
+      conversation,
+      toolEvents: toolEvents.map((event) => ({ type: event.type, payload: event.payload }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pythos-transcript-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const openSettings = () => {
     setSettingsDraft(config ? structuredClone(config) : null);
+    setActiveTab("general");
     setSettingsOpen(true);
   };
 
   const saveSettings = async () => {
-    if (!settingsDraft || !window.pythos) {
-      return;
-    }
+    if (!settingsDraft || !window.pythos) return;
     const saved = await window.pythos.saveConfig(settingsDraft);
     const nextPiStatus = await window.pythos.getPiStatus();
+    const nextMcpStatus = await window.pythos.getMcpStatus?.().catch(() => null);
     setConfig(saved);
     setSettingsDraft(structuredClone(saved));
     setPiStatus(nextPiStatus);
+    setMcpStatus(nextMcpStatus);
     setConfigSummary(formatRuntimeSummary(saved, nextPiStatus));
+    setShowStats(Boolean(saved.gui?.showPerformanceStats));
     setSettingsOpen(false);
     setError(null);
   };
 
+  const startResize = (event: React.MouseEvent) => {
+    resizeStartX.current = event.clientX;
+    resizeStartWidth.current = sideWidth;
+    setIsResizing(true);
+  };
+
+  const visibleConversation = streamingText && !searchQuery.trim()
+    ? [...filteredConversation, { id: streamingText.id, role: "assistant" as const, text: streamingText.text, timestamp: Date.now() }]
+    : filteredConversation;
+
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ "--side-width": `${sideWidth}px` } as React.CSSProperties}>
       <section className="stage">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Pythos v3</p>
+          <div className="title-block">
+            <p className="eyebrow">
+              <span className={`eyebrow-dot ${state}`} aria-hidden="true" />
+              Pythos v3
+            </p>
             <h1>{statusText}</h1>
           </div>
-          <div className="status-pill">
-            <Activity size={16} />
-            {configSummary}
+          <div className="status-chips">
+            <div className="status-pill" title="Local model">
+              <Activity size={14} />
+              {configSummary}
+            </div>
+            <div className="status-pill" title="Pi status">
+              <Bot size={14} />
+              {formatPiStatus(piStatus)}
+            </div>
+            {mcpStatus?.enabled && (
+              <div className="status-pill" title="MCP servers">
+                <Wrench size={14} />
+                {mcpStatus.servers.filter((s) => s.connected).length}/{mcpStatus.servers.length} MCP
+              </div>
+            )}
           </div>
         </header>
 
@@ -354,11 +545,39 @@ export function App() {
         <div
           className={`orb-wrap ${state}${toolFlashActive ? " tool-flash" : ""}`}
           style={{ "--level": audioLevel } as React.CSSProperties}
+          onClick={() => {
+            if (state === "idle" || state === "wakeword") {
+              toggleMic();
+            } else if (state === "listening") {
+              stopAll();
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label={state === "listening" ? "Stop listening" : "Start push to talk"}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              if (state === "listening") stopAll();
+              else toggleMic();
+            }
+          }}
         >
+          {showStats && (
+            <div className="performance-stats">
+              {uptime} up · {conversation.length} msgs · {connectedNodes.length} nodes
+            </div>
+          )}
           <div className="orb-glow" />
           <div className="node-orbits" aria-label="Connected nodes">
             {connectedNodes.map((node, index) => (
-              <NodeOrbit node={node} index={index} count={connectedNodes.length} key={node.id} />
+              <NodeOrbit
+                node={node}
+                index={index}
+                count={connectedNodes.length}
+                key={node.id}
+                onInspect={() => setInspectingNode(node)}
+              />
             ))}
           </div>
           <div className="orb">
@@ -366,50 +585,53 @@ export function App() {
             <div className="pulse-ring one" />
             <div className="pulse-ring two" />
           </div>
+          <span className="orb-label">{state === "listening" ? "Tap to stop" : "Tap to talk"}</span>
         </div>
 
         <div className="controls" aria-label="Voice controls">
           <button
             className={voiceButtonClass("wakeword", wakeSessionArmed || state === "wakeword", pendingVoiceAction)}
             onClick={toggleWakeword}
-            title={wakeSessionArmed || state === "wakeword" ? "Stop wake word" : "Arm wake word"}
+            title={wakeSessionArmed || state === "wakeword" ? "Stop wake word (W)" : "Arm wake word (W)"}
             aria-pressed={wakeSessionArmed || state === "wakeword"}
             data-label="Wake"
           >
-            <Radio />
+            <Radio size={20} />
           </button>
           <button
             className={voiceButtonClass("mic", state === "listening", pendingVoiceAction)}
             onClick={toggleMic}
-            title={state === "listening" ? "Stop listening" : "Start push to talk"}
+            title={state === "listening" ? "Stop listening (Space)" : "Start push to talk (Space)"}
             aria-pressed={state === "listening"}
             data-label="Talk"
           >
-            {state === "listening" ? <MicOff /> : <Mic />}
+            {state === "listening" ? <MicOff size={20} /> : <Mic size={20} />}
           </button>
-          <button className="icon-button" onClick={stopAll} title="Stop current work">
-            <Square />
+          <button className="icon-button" onClick={stopAll} title="Stop current work (Esc)" data-label="Stop">
+            <Square size={20} />
           </button>
-          <button
-            className="icon-button"
-            onClick={() => {
-              setConversation([]);
-              window.pythos?.clearAssistantContext();
-            }}
-            title="Clear transcript and context"
-          >
-            <Trash2 />
+          <button className="icon-button" onClick={clearContext} title="Clear transcript and context" data-label="Clear">
+            <Trash2 size={20} />
           </button>
-          <button className="icon-button" onClick={() => window.pythos?.getPiCommands()} title="Refresh Pi tools">
-            <Wrench />
+          <button className="icon-button" onClick={() => window.pythos?.getPiCommands()} title="Refresh Pi tools" data-label="Tools">
+            <Wrench size={20} />
           </button>
-          <button className="icon-button" onClick={openSettings} title="Settings">
-            <Settings />
+          <button className="icon-button" onClick={openSettings} title="Settings (,)" data-label="Settings">
+            <Settings size={20} />
           </button>
+        </div>
+
+        <div className="shortcuts-hint">
+          <span><kbd>Space</kbd> Talk</span>
+          <span><kbd>W</kbd> Wake</span>
+          <span><kbd>Esc</kbd> Stop</span>
+          <span><kbd>/</kbd> Type</span>
+          <span><kbd>,</kbd> Settings</span>
         </div>
 
         <form className="text-prompt" onSubmit={submitTypedPrompt}>
           <input
+            ref={promptRef}
             value={typedPrompt}
             onChange={(event) => setTypedPrompt(event.target.value)}
             placeholder="Type to Pythos"
@@ -420,20 +642,65 @@ export function App() {
           </button>
         </form>
 
-        {error && <div className="error-banner">{error}</div>}
+        <div className="quick-replies">
+          {QUICK_REPLIES.map((text) => (
+            <button key={text} className="quick-reply" onClick={() => sendQuickReply(text)}>
+              {text}
+            </button>
+          ))}
+        </div>
+
+        {error && (
+          <div className="error-banner">
+            <AlertCircle size={18} />
+            {error}
+          </div>
+        )}
       </section>
 
       <aside className="side-panel">
+        <div
+          className={`resize-handle ${isResizing ? "dragging" : ""}`}
+          onMouseDown={startResize}
+          title="Drag to resize"
+        />
+
         <section className="panel-section">
-          <h2>Conversation</h2>
+          <header>
+            <h2><MessageSquare size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Conversation</h2>
+            <div className="panel-actions">
+              <div className="search-bar">
+                <Search size={13} />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search..."
+                  aria-label="Search transcript"
+                />
+              </div>
+              <button className="panel-action" onClick={exportTranscript} title="Export transcript">
+                <Download size={14} />
+              </button>
+              <button className="panel-action" onClick={clearContext} title="Clear transcript">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </header>
           <div className="conversation-list">
-            {conversation.length === 0 ? (
-              <p className="muted">No transcript yet.</p>
+            {visibleConversation.length === 0 ? (
+              <div className="empty-state">
+                <MessageSquare size={32} />
+                <p>No transcript yet</p>
+                <small>Speak or type to start a conversation.</small>
+              </div>
             ) : (
-              conversation.map((item) => (
+              visibleConversation.map((item) => (
                 <article className={`message ${item.role}`} key={item.id}>
-                  <span>{item.role}</span>
-                  <p>{item.text}</p>
+                  <header>
+                    <span>{roleLabel(item.role)}</span>
+                    <time>{formatTime(item.timestamp)}</time>
+                  </header>
+                  <p className={streamingText?.id === item.id ? "streaming" : ""}>{item.text}</p>
                 </article>
               ))
             )}
@@ -462,16 +729,24 @@ export function App() {
         </section>
 
         <section className="panel-section">
-          <h2>Tool Timeline</h2>
+          <header>
+            <h2><Zap size={15} style={{ display: "inline", verticalAlign: "middle", marginRight: 8 }} />Tool Timeline</h2>
+            <div className="panel-actions">
+              <button className="panel-action" onClick={() => setToolEvents([])} title="Clear tool events">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </header>
           <div className="tool-list">
-            {toolEvents.length === 0 ? (
-              <p className="muted">Pi events will appear here.</p>
+            {filteredToolEvents.length === 0 ? (
+              <div className="empty-state">
+                <Wrench size={32} />
+                <p>Tool events will appear here</p>
+                <small>Pi events, MCP calls, and local tools show in this timeline.</small>
+              </div>
             ) : (
-              toolEvents.map((event, index) => (
-                <article className="tool-event" key={`${event.type}-${index}`}>
-                  <span>{labelEvent(event)}</span>
-                  <code title={fullEventPayload(event.payload)}>{summarizeEvent(event.payload)}</code>
-                </article>
+              filteredToolEvents.map((event, index) => (
+                <ToolEventCard event={event} key={`${event.type}-${index}`} />
               ))
             )}
           </div>
@@ -497,86 +772,168 @@ export function App() {
               </button>
             </header>
 
-            <div className="settings-grid">
-              <Setting label="Assistant state" value={state} />
-              <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-              <Setting label="Brain (local, on-device)" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
-              <SettingSelect
-                label="Adaptive thinking"
-                value={settingsDraft?.ollama?.think ?? "auto"}
-                options={[
-                  { label: "Auto (task-based)", value: "auto" },
-                  { label: "Always on", value: "on" },
-                  { label: "Always off (fastest)", value: "off" }
-                ]}
-                onChange={(value) =>
-                  updateDraft(setSettingsDraft, ["ollama", "think"], value as ThinkMode)
-                }
-              />
-              <SettingInput
-                label="Ollama endpoint (local)"
-                value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
-                onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "baseUrl"], value)}
-              />
-              <SettingInput
-                label="Spotify client ID"
-                value={settingsDraft?.spotify?.clientId ?? ""}
-                onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "clientId"], value)}
-              />
-              <SettingInput
-                label="Spotify redirect URI"
-                value={settingsDraft?.spotify?.redirectUri ?? "http://127.0.0.1:8888/callback"}
-                onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "redirectUri"], value)}
-              />
-              <SettingToggle
-                label={`Low resource mode (Gemma ${settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"})`}
-                checked={Boolean(settingsDraft?.python?.lowResourceMode)}
-                onChange={(value) => updateDraft(setSettingsDraft, ["python", "lowResourceMode"], value)}
-              />
-              <SettingToggle
-                label="Experimental Pi tools"
-                checked={Boolean(settingsDraft?.pi?.enabled)}
-                onChange={(value) => updateDraft(setSettingsDraft, ["pi", "enabled"], value)}
-              />
-              <SettingInput
-                label="Wake word"
-                value={String(settingsDraft?.audio?.wakeWord ?? "")}
-                onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeWord"], value)}
-              />
-              <SettingNumber
-                label="Wake threshold"
-                value={Number(settingsDraft?.audio?.wakeThreshold ?? 0.5)}
-                min={0.1}
-                max={0.95}
-                step={0.05}
-                onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeThreshold"], value)}
-              />
-              <SettingNumber
-                label="Speech speed"
-                value={Number(settingsDraft?.audio?.ttsLengthScale ?? 0.8)}
-                min={0.5}
-                max={1.6}
-                step={0.05}
-                onChange={(value) => updateDraft(setSettingsDraft, ["audio", "ttsLengthScale"], value)}
-                hint="Lower is faster"
-              />
-              <SettingNumber
-                label="ASR timeout"
-                value={Number(settingsDraft?.audio?.asrTimeoutSeconds ?? 10)}
-                min={3}
-                max={30}
-                step={1}
-                onChange={(value) => updateDraft(setSettingsDraft, ["audio", "asrTimeoutSeconds"], value)}
-              />
-              <SettingNumber
-                label="Silence timeout"
-                value={Number(settingsDraft?.audio?.silenceTimeoutSeconds ?? 3)}
-                min={1}
-                max={10}
-                step={0.5}
-                onChange={(value) => updateDraft(setSettingsDraft, ["audio", "silenceTimeoutSeconds"], value)}
-              />
+            <div className="settings-tabs" role="tablist">
+              {(["general", "audio", "tools", "paths"] as SettingsTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  className={`settings-tab ${activeTab === tab ? "active" : ""}`}
+                  role="tab"
+                  aria-selected={activeTab === tab}
+                  onClick={() => setActiveTab(tab)}
+                >
+                  {tab[0].toUpperCase() + tab.slice(1)}
+                </button>
+              ))}
             </div>
+
+            {activeTab === "general" && (
+              <div className="settings-grid">
+                <Setting label="Assistant state" value={state} />
+                <Setting label="Pi status" value={formatPiStatus(piStatus)} />
+                <Setting label="Brain" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
+                <SettingSelect
+                  label="Adaptive thinking"
+                  value={settingsDraft?.ollama?.think ?? "auto"}
+                  options={[
+                    { label: "Auto (task-based)", value: "auto" },
+                    { label: "Always on", value: "on" },
+                    { label: "Always off (fastest)", value: "off" }
+                  ]}
+                  onChange={(value) =>
+                    updateDraft(setSettingsDraft, ["ollama", "think"], value as ThinkMode)
+                  }
+                />
+                <SettingSelect
+                  label="Visualizer style"
+                  value={settingsDraft?.gui?.visualizer ?? "orb"}
+                  options={[
+                    { label: "Orb", value: "orb" },
+                    { label: "Compact", value: "compact" },
+                    { label: "Minimal", value: "minimal" }
+                  ]}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "visualizer"], value)}
+                />
+                <SettingNumber
+                  label="Max transcript items"
+                  value={Number(settingsDraft?.gui?.maxTranscriptItems ?? 100)}
+                  min={20}
+                  max={500}
+                  step={10}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "maxTranscriptItems"], value)}
+                />
+                <SettingToggle
+                  label="Show performance stats"
+                  checked={Boolean(settingsDraft?.gui?.showPerformanceStats)}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["gui", "showPerformanceStats"], value)}
+                />
+                <SettingInput
+                  label="Ollama endpoint"
+                  value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "baseUrl"], value)}
+                />
+                <SettingInput
+                  label="Low-resource model"
+                  value={settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "lowResourceModel"], value)}
+                />
+                <SettingToggle
+                  label={`Low resource mode (${settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"})`}
+                  checked={Boolean(settingsDraft?.python?.lowResourceMode)}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["python", "lowResourceMode"], value)}
+                />
+              </div>
+            )}
+
+            {activeTab === "audio" && (
+              <div className="settings-grid">
+                <SettingInput
+                  label="Wake word"
+                  value={String(settingsDraft?.audio?.wakeWord ?? "")}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeWord"], value)}
+                />
+                <SettingNumber
+                  label="Wake threshold"
+                  value={Number(settingsDraft?.audio?.wakeThreshold ?? 0.5)}
+                  min={0.1}
+                  max={0.95}
+                  step={0.05}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "wakeThreshold"], value)}
+                />
+                <SettingNumber
+                  label="Speech speed"
+                  value={Number(settingsDraft?.audio?.ttsLengthScale ?? 0.8)}
+                  min={0.5}
+                  max={1.6}
+                  step={0.05}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "ttsLengthScale"], value)}
+                  hint="Lower is faster"
+                />
+                <SettingNumber
+                  label="ASR timeout"
+                  value={Number(settingsDraft?.audio?.asrTimeoutSeconds ?? 10)}
+                  min={3}
+                  max={30}
+                  step={1}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "asrTimeoutSeconds"], value)}
+                />
+                <SettingNumber
+                  label="Silence timeout"
+                  value={Number(settingsDraft?.audio?.silenceTimeoutSeconds ?? 3)}
+                  min={1}
+                  max={10}
+                  step={0.5}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["audio", "silenceTimeoutSeconds"], value)}
+                />
+              </div>
+            )}
+
+            {activeTab === "tools" && (
+              <div className="settings-grid">
+                <SettingToggle
+                  label="Experimental Pi tools"
+                  checked={Boolean(settingsDraft?.pi?.enabled)}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["pi", "enabled"], value)}
+                />
+                <SettingInput
+                  label="Pi command"
+                  value={settingsDraft?.pi?.command ?? "pi"}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["pi", "command"], value)}
+                />
+                <SettingInput
+                  label="Spotify client ID"
+                  value={settingsDraft?.spotify?.clientId ?? ""}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "clientId"], value)}
+                />
+                <SettingInput
+                  label="Spotify redirect URI"
+                  value={settingsDraft?.spotify?.redirectUri ?? "http://127.0.0.1:8888/callback"}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "redirectUri"], value)}
+                />
+                <SettingToggle
+                  label="MCP servers"
+                  checked={Boolean(settingsDraft?.mcp?.enabled)}
+                  onChange={(value) => updateDraft(setSettingsDraft, ["mcp", "enabled"], value)}
+                />
+              </div>
+            )}
+
+            {activeTab === "paths" && (
+              <section className="settings-block">
+                <h3>Model Paths</h3>
+                <div className="path-list">
+                  {config?.models ? (
+                    Object.entries(config.models).map(([key, value]) => (
+                      <div className="path-row" key={key}>
+                        <span>{key}</span>
+                        <code>{value}</code>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted">No model paths loaded.</p>
+                  )}
+                </div>
+              </section>
+            )}
 
             <div className="settings-actions">
               <span>{formatPiCommand(settingsDraft ?? config)}</span>
@@ -585,30 +942,43 @@ export function App() {
                 Save
               </button>
             </div>
-
-            <section className="settings-block">
-              <h3>Model Paths</h3>
-              <div className="path-list">
-                {config?.models ? (
-                  Object.entries(config.models).map(([key, value]) => (
-                    <div className="path-row" key={key}>
-                      <span>{key}</span>
-                      <code>{value}</code>
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">No model paths loaded.</p>
-                )}
-              </div>
-            </section>
           </section>
+        </div>
+      )}
+
+      {inspectingNode && (
+        <div className="node-inspector">
+          <header>
+            <h4>{inspectingNode.label}</h4>
+            <button className="panel-action" onClick={() => setInspectingNode(null)}>
+              <X size={14} />
+            </button>
+          </header>
+          <dl>
+            <dt>ID</dt>
+            <dd>{inspectingNode.id}</dd>
+            <dt>Status</dt>
+            <dd>{formatNodeStatus(inspectingNode.status)}</dd>
+            <dt>Last seen</dt>
+            <dd>{formatTime(inspectingNode.lastSeen)}</dd>
+          </dl>
         </div>
       )}
     </main>
   );
 }
 
-function NodeOrbit({ node, index, count }: { node: ConnectedNode; index: number; count: number }) {
+function NodeOrbit({
+  node,
+  index,
+  count,
+  onInspect
+}: {
+  node: ConnectedNode;
+  index: number;
+  count: number;
+  onInspect: () => void;
+}) {
   const total = Math.max(count, 1);
   const angle = (index * 360) / total;
   const style = {
@@ -623,7 +993,7 @@ function NodeOrbit({ node, index, count }: { node: ConnectedNode; index: number;
   return (
     <div className={`node-orbit ${node.status}`} style={style}>
       <span className="node-thread" aria-hidden="true" />
-      <div className="node-anchor">
+      <div className="node-anchor" onClick={onInspect} role="button" tabIndex={0} aria-label={`Inspect ${node.label}`} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onInspect(); }}>
         <div className="node-body">
           <div className="node-orb" title={`${node.label}: ${formatNodeStatus(node.status)}`}>
             <span className="node-status-dot" />
@@ -632,6 +1002,41 @@ function NodeOrbit({ node, index, count }: { node: ConnectedNode; index: number;
         </div>
       </div>
     </div>
+  );
+}
+
+function ToolEventCard({ event }: { event: PiEvent }) {
+  const payload = event.payload as Record<string, unknown> | string;
+  const type = typeof payload === "object" && payload ? String((payload as Record<string, unknown>).type ?? event.type) : event.type;
+  const phase = type.replace("tool_execution_", "");
+  const name = typeof payload === "object" && payload ? humanToolName((payload as Record<string, unknown>).name) : "Tool";
+  const Icon = TOOL_ICONS[phase === "start" ? "started" : phase === "end" ? "end" : phase === "error" ? "error" : "default"] ?? Wrench;
+  const args = typeof payload === "object" && payload ? objectField(payload as Record<string, unknown>, "args") : null;
+  const duration = typeof payload === "object" && payload ? (payload as Record<string, unknown>).durationMs : undefined;
+  const error = typeof payload === "object" && payload ? stringField(payload as Record<string, unknown>, "errorMessage") : "";
+
+  return (
+    <article className="tool-event">
+      <header>
+        <span>
+          <span className={`tool-icon ${phase}`}>
+            <Icon size={14} />
+          </span>
+          {labelEvent(event)}
+        </span>
+        <time>{formatTime(Date.now())}</time>
+      </header>
+      <div className="tool-body">
+        <code title={fullEventPayload(event.payload)}>{summarizeEvent(event.payload)}</code>
+        {(args || duration !== undefined || error) && (
+          <div className="tool-meta">
+            {args && <span>args</span>}
+            {duration !== undefined && <span>{formatDuration(duration)}</span>}
+            {error && <span style={{ color: "var(--error)" }}>failed</span>}
+          </div>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -646,12 +1051,8 @@ function Setting({ label, value }: { label: string; value: string }) {
 
 function voiceButtonClass(action: VoiceAction, active: boolean, pending: VoiceAction | null): string {
   const classes = ["icon-button", "voice-button"];
-  if (active) {
-    classes.push("active");
-  }
-  if (pending === action) {
-    classes.push("loading");
-  }
+  if (active) classes.push("active");
+  if (pending === action) classes.push("loading");
   return classes.join(" ");
 }
 
@@ -718,22 +1119,8 @@ function SettingNumber({
     <label className="setting-row editable">
       <span>{label}</span>
       <div className="number-control">
-        <input
-          type="range"
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          onChange={(event) => onChange(Number(event.target.value))}
-        />
-        <input
-          type="number"
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          onChange={(event) => onChange(Number(event.target.value))}
-        />
+        <input type="range" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} />
+        <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} />
       </div>
       {hint && <small>{hint}</small>}
     </label>
@@ -763,9 +1150,7 @@ function updateDraft(
   value: unknown
 ): void {
   setSettingsDraft((current) => {
-    if (!current) {
-      return current;
-    }
+    if (!current) return current;
     const next = structuredClone(current) as AppConfig;
     const nextRecord = next as unknown as Record<keyof AppConfig, unknown>;
     const existingGroup = nextRecord[path[0]];
@@ -781,43 +1166,47 @@ function updateDraft(
 
 function extractAssistantText(payload: Record<string, unknown>): string {
   const text = payload.text ?? payload.content ?? payload.message;
-  if (typeof text === "string") {
-    return text;
-  }
+  if (typeof text === "string") return text;
   return "";
 }
 
-function upsertAssistant(items: ConversationItem[], text: string): ConversationItem[] {
+function upsertAssistant(items: ConversationItem[], text: string, existingId?: string): ConversationItem[] {
+  if (existingId) {
+    const index = items.findIndex((item) => item.id === existingId);
+    if (index >= 0) {
+      const updated = [...items];
+      updated[index] = { ...items[index], text };
+      return updated;
+    }
+  }
   const last = items.at(-1);
   if (last?.role === "assistant") {
     return [...items.slice(0, -1), { ...last, text }];
   }
-  return [...items, { id: nowId(), role: "assistant", text, timestamp: Date.now() }];
+  return [...items, { id: existingId ?? nowId(), role: "assistant", text, timestamp: Date.now() }];
+}
+
+function trimItems(items: ConversationItem[], config: AppConfig | null): ConversationItem[] {
+  const max = config?.gui?.maxTranscriptItems ?? 100;
+  if (items.length <= max) return items;
+  return items.slice(items.length - max);
 }
 
 function updateConnectedNodes(nodes: ConnectedNode[], event: PiEvent): ConnectedNode[] {
   const echoEvent = extractEchoEvent(event);
-  if (!echoEvent) {
-    return nodes;
-  }
+  if (!echoEvent) return nodes;
   const payload = echoEvent.payload;
-  if (!payload || typeof payload !== "object") {
-    return nodes;
-  }
+  if (!payload || typeof payload !== "object") return nodes;
   const record = payload as Record<string, unknown>;
   const deviceId = typeof record.deviceId === "string" && record.deviceId.trim() ? record.deviceId.trim() : "";
-  if (!deviceId) {
-    return nodes;
-  }
+  if (!deviceId) return nodes;
   const eventType = String(record.type ?? echoEvent.type);
   if (eventType === "offline" || eventType === "disconnected") {
     return nodes.filter((node) => node.id !== deviceId);
   }
   const existingIndex = nodes.findIndex((node) => node.id === deviceId);
   const existingNode = existingIndex >= 0 ? nodes[existingIndex] : null;
-  if (echoEvent.type === "realtime_state" && !existingNode) {
-    return nodes;
-  }
+  if (echoEvent.type === "realtime_state" && !existingNode) return nodes;
   const label = extractNodeLabel(record, deviceId, existingNode?.label);
   const status =
     eventType === "audio_level" && existingNode
@@ -833,13 +1222,9 @@ function updateConnectedNodes(nodes: ConnectedNode[], event: PiEvent): Connected
 }
 
 function extractEchoEvent(event: PiEvent): { type: string; payload: unknown } | null {
-  if (event.type !== "echo" || !event.payload || typeof event.payload !== "object") {
-    return null;
-  }
+  if (event.type !== "echo" || !event.payload || typeof event.payload !== "object") return null;
   const payload = event.payload as Record<string, unknown>;
-  if (typeof payload.type !== "string") {
-    return null;
-  }
+  if (typeof payload.type !== "string") return null;
   return { type: payload.type, payload: payload.payload };
 }
 
@@ -850,12 +1235,8 @@ function extractNodeLabel(record: Record<string, unknown>, deviceId: string, fal
       return candidate.trim().slice(0, 24);
     }
   }
-  if (fallbackLabel) {
-    return fallbackLabel;
-  }
-  if (/echo|alexa/i.test(deviceId)) {
-    return "Alexa";
-  }
+  if (fallbackLabel) return fallbackLabel;
+  if (/echo|alexa/i.test(deviceId)) return "Alexa";
   return deviceId.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 24);
 }
 
@@ -864,25 +1245,13 @@ function deriveNodeStatus(
   eventType: string,
   record: Record<string, unknown>
 ): NodeStatus {
-  if (echoType === "error" || eventType === "error") {
-    return "error";
-  }
+  if (echoType === "error" || eventType === "error") return "error";
   const value = typeof record.value === "string" ? record.value : "";
-  if (eventType === "listening" || eventType === "wake" || value === "listening" || value === "wakeword") {
-    return "listening";
-  }
-  if (echoType === "upload_started" || echoType === "transcript" || eventType === "final_transcript") {
-    return "thinking";
-  }
-  if (echoType === "reply" || eventType === "tts_play_requested" || eventType === "play_audio") {
-    return "speaking";
-  }
-  if (eventType === "idle" || eventType === "online" || eventType === "status" || eventType === "heartbeat") {
-    return "idle";
-  }
-  if (echoType === "realtime_state" && value === "thinking") {
-    return "thinking";
-  }
+  if (eventType === "listening" || eventType === "wake" || value === "listening" || value === "wakeword") return "listening";
+  if (echoType === "upload_started" || echoType === "transcript" || eventType === "final_transcript") return "thinking";
+  if (echoType === "reply" || eventType === "tts_play_requested" || eventType === "play_audio") return "speaking";
+  if (eventType === "idle" || eventType === "online" || eventType === "status" || eventType === "heartbeat") return "idle";
+  if (echoType === "realtime_state" && value === "thinking") return "thinking";
   return "idle";
 }
 
@@ -894,39 +1263,45 @@ function formatNodeStatus(status: NodeStatus): string {
   return "Error";
 }
 
+function roleLabel(role: ConversationItem["role"]): string {
+  if (role === "user") return "You";
+  if (role === "assistant") return "Pythos";
+  if (role === "tool") return "Tool";
+  return "System";
+}
+
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatDurationMs(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes % 60 > 0) parts.push(`${minutes % 60}m`);
+  parts.push(`${seconds % 60}s`);
+  return parts.join(" ");
+}
+
 function summarizeEvent(payload: unknown): string {
-  if (typeof payload === "string") {
-    return payload.slice(0, 160);
-  }
+  if (typeof payload === "string") return payload.slice(0, 160);
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
     const type = String(record.type ?? "");
-    if (type === "debug") {
-      return summarizeDebugEvent(record);
-    }
-    if (type === "tool_execution_start" || type === "tool_execution_end" || type === "tool_execution_error") {
-      return summarizeToolEvent(record);
-    }
-    if (typeof record.text === "string") {
-      return record.text.slice(0, 220);
-    }
-    if (typeof record.errorMessage === "string") {
-      return record.errorMessage.slice(0, 220);
-    }
+    if (type === "debug") return summarizeDebugEvent(record);
+    if (type === "tool_execution_start" || type === "tool_execution_end" || type === "tool_execution_error") return summarizeToolEvent(record);
+    if (typeof record.text === "string") return record.text.slice(0, 220);
+    if (typeof record.errorMessage === "string") return record.errorMessage.slice(0, 220);
     if (typeof record.code === "number" || record.code === null) {
-      if (record.code === 4294967295) {
-        return "Pi process exited. Local Gemma will handle active requests.";
-      }
+      if (record.code === 4294967295) return "Pi process exited. Local Gemma will handle active requests.";
       return `Process exited with code ${String(record.code ?? "unknown")}`;
     }
     const message = record.message as Record<string, unknown> | undefined;
-    if (typeof message?.errorMessage === "string") {
-      return message.errorMessage.slice(0, 220);
-    }
+    if (typeof message?.errorMessage === "string") return message.errorMessage.slice(0, 220);
   }
-  if (typeof payload === "string" && payload.trim()) {
-    return payload.trim().slice(0, 220);
-  }
+  if (typeof payload === "string" && payload.trim()) return payload.trim().slice(0, 220);
   return JSON.stringify(payload).slice(0, 220);
 }
 
@@ -935,37 +1310,17 @@ function labelEvent(event: PiEvent): string {
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
     const type = String(record.type ?? event.type);
-    if (type === "status") {
-      return "Status";
-    }
-    if (type === "debug") {
-      return "Debug";
-    }
-    if (type === "message_end") {
-      return event.type === "gemma-fallback" ? "Gemma (fallback)" : "Assistant";
-    }
-    if (type === "tool_execution_start") {
-      return `Tool Started - ${humanToolName(record.name)}`;
-    }
-    if (type === "tool_execution_end") {
-      return `Tool Finished - ${humanToolName(record.name)}`;
-    }
-    if (type === "tool_execution_error") {
-      return `Tool Failed - ${humanToolName(record.name)}`;
-    }
-    if (type === "agent_start") {
-      return "Pi Started";
-    }
-    if (type === "agent_end") {
-      return "Pi Finished";
-    }
+    if (type === "status") return "Status";
+    if (type === "debug") return "Debug";
+    if (type === "message_end") return event.type === "gemma-fallback" ? "Gemma (fallback)" : "Assistant";
+    if (type === "tool_execution_start") return `Started - ${humanToolName(record.name)}`;
+    if (type === "tool_execution_end") return `Finished - ${humanToolName(record.name)}`;
+    if (type === "tool_execution_error") return `Failed - ${humanToolName(record.name)}`;
+    if (type === "agent_start") return "Pi Started";
+    if (type === "agent_end") return "Pi Finished";
   }
-  if (event.type === "exit") {
-    return "Pi Exit";
-  }
-  if (event.type === "stderr") {
-    return "Pi Log";
-  }
+  if (event.type === "exit") return "Pi Exit";
+  if (event.type === "stderr") return "Pi Log";
   return event.type;
 }
 
@@ -977,15 +1332,9 @@ function summarizeDebugEvent(record: Record<string, unknown>): string {
       parts.push(`${key}=${formatEventValue(record[key])}`);
     }
   }
-  if (typeof record.prompt === "string") {
-    parts.push(`prompt=${formatEventValue(record.prompt)}`);
-  }
-  if (record.args && typeof record.args === "object") {
-    parts.push(summarizeArgs(record.args as Record<string, unknown>));
-  }
-  if (typeof record.error === "string") {
-    parts.push(`error=${formatEventValue(record.error)}`);
-  }
+  if (typeof record.prompt === "string") parts.push(`prompt=${formatEventValue(record.prompt)}`);
+  if (record.args && typeof record.args === "object") parts.push(summarizeArgs(record.args as Record<string, unknown>));
+  if (typeof record.error === "string") parts.push(`error=${formatEventValue(record.error)}`);
   return parts.filter(Boolean).join(" ");
 }
 
@@ -993,29 +1342,17 @@ function summarizeToolEvent(record: Record<string, unknown>): string {
   const args = objectField(record, "args");
   const phase = String(record.type ?? "").replace("tool_execution_", "");
   const parts = [humanToolName(record.name), phase];
-  if (record.route) {
-    parts.push(`route=${formatEventValue(record.route)}`);
-  }
-  if (record.source) {
-    parts.push(`source=${formatEventValue(record.source)}`);
-  }
-  if (record.turnId !== undefined) {
-    parts.push(`turn=${formatEventValue(record.turnId)}`);
-  }
-  if (args) {
-    parts.push(summarizeArgs(args));
-  }
-  if (record.durationMs !== undefined) {
-    parts.push(`duration=${formatDuration(record.durationMs)}`);
-  }
+  if (record.route) parts.push(`route=${formatEventValue(record.route)}`);
+  if (record.source) parts.push(`source=${formatEventValue(record.source)}`);
+  if (record.turnId !== undefined) parts.push(`turn=${formatEventValue(record.turnId)}`);
+  if (args) parts.push(summarizeArgs(args));
+  if (record.durationMs !== undefined) parts.push(`duration=${formatDuration(record.durationMs)}`);
   const error = stringField(record, "errorMessage");
   if (error) {
     parts.push(`error=${formatEventValue(error)}`);
   } else {
     const text = stringField(record, "text");
-    if (text && text !== "Tool started" && text !== "Retrying tool") {
-      parts.push(`text=${formatEventValue(text)}`);
-    }
+    if (text && text !== "Tool started" && text !== "Retrying tool") parts.push(`text=${formatEventValue(text)}`);
   }
   return parts.filter(Boolean).join(" ");
 }
@@ -1030,22 +1367,7 @@ function formatToolConversationText(payload: Record<string, unknown>): string {
 }
 
 function summarizeArgs(args: Record<string, unknown>): string {
-  const keys = [
-    "action",
-    "query",
-    "kind",
-    "prefer",
-    "uri",
-    "deviceName",
-    "percent",
-    "state",
-    "app",
-    "url",
-    "location",
-    "expression",
-    "time",
-    "label"
-  ];
+  const keys = ["action", "query", "kind", "prefer", "uri", "deviceName", "percent", "state", "app", "url", "location", "expression", "time", "label"];
   const parts = keys
     .filter((key) => args[key] !== undefined && args[key] !== null && args[key] !== "")
     .map((key) => `${key}=${formatEventValue(args[key])}`);
@@ -1083,9 +1405,7 @@ function humanToolName(value: unknown): string {
 }
 
 function fullEventPayload(payload: unknown): string {
-  if (typeof payload === "string") {
-    return payload;
-  }
+  if (typeof payload === "string") return payload;
   try {
     return JSON.stringify(payload, null, 2);
   } catch {
@@ -1095,31 +1415,21 @@ function fullEventPayload(payload: unknown): string {
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
   const model = config.ollama?.model ?? "gemma4:12b";
-  if (config.pi.enabled && status?.available) {
-    return `Gemma ${model} (local) + Pi tools`;
+  if (config.pi?.enabled && status?.available) {
+    return `Gemma ${model} + Pi tools`;
   }
-  return `Gemma ${model} (local, on-device)`;
+  return `Gemma ${model}`;
 }
 
 function formatPiStatus(status: PiStatus | null): string {
-  if (!status) {
-    return "Checking";
-  }
-  if (!status.enabled) {
-    return "Disabled";
-  }
-  if (!status.available) {
-    return status.reason ?? "Not found";
-  }
-  if (status.running) {
-    return "Available and running";
-  }
-  return "Available, starts on demand";
+  if (!status) return "Checking";
+  if (!status.enabled) return "Disabled";
+  if (!status.available) return status.reason ?? "Not found";
+  if (status.running) return "Running";
+  return "Available";
 }
 
 function formatPiCommand(config: AppConfig | null): string {
-  if (!config) {
-    return "Unknown";
-  }
+  if (!config) return "Unknown";
   return [config.pi.command, ...config.pi.args].join(" ");
 }
