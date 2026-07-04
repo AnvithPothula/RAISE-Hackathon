@@ -566,7 +566,7 @@ function resolveOpenIntentFromTarget(rawTarget: string, cleanPrompt?: string): L
   if (isWebsiteTarget(normalized, target)) {
     return { name: "open_website", args: { url: target } };
   }
-  if (looksLikeFolderOpenRequest(cleanPrompt, rawTarget)) {
+  if (looksLikeFolderOpenRequest(cleanPrompt ?? "", rawTarget)) {
     return null;
   }
   if (isDirectAppLaunchTarget(normalized, target)) {
