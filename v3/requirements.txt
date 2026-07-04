@@ -1,3 +1,14 @@
+# Python dependencies for the Pythos audio worker (wake word, STT, TTS, tools).
+#
+# The AI brain does NOT run in Python. It runs locally via Ollama + Gemma 4,
+# which the Electron main process calls over HTTP. Ollama is a SYSTEM dependency,
+# not a pip package:
+#   1. Install Ollama:  https://ollama.com/download  (macOS: brew install ollama)
+#   2. Pull the model:  ollama pull gemma4:12b   (see scripts/install-ollama-models.sh)
+#
+# PyAudio also needs the native PortAudio library:
+#   macOS:         brew install portaudio
+#   Debian/Ubuntu: sudo apt-get install -y portaudio19-dev
 certifi==2026.5.20
 cffi==2.0.0
 charset-normalizer==3.4.7

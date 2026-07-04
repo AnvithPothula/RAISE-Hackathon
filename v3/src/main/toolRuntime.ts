@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, GeminiThinkLevel } from "../shared/types.js";
+import type { AppConfig } from "../shared/types.js";
 import { appRoot } from "./config.js";
 import {
   extractLocationFromPrompt,
@@ -13,196 +13,46 @@ import {
 import { buildDynamicSkillPrompt } from "./skillRegistry.js";
 import type { McpManager } from "./mcpManager.js";
 
-const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+// Transport-agnostic tool runtime shared by the local Gemma (Ollama) client.
+// It owns the function/tool declarations, the system prompt, and the dispatch
+// of tool calls to local tools or MCP servers. It performs no model inference
+// itself and makes no network calls to any hosted LLM — the local model client
+// drives the conversation loop and delegates individual tool calls here.
 
-export type GeminiContext = {
+const systemPromptPath = path.join(appRoot, "systemprompt.txt");
+
+/** Context threaded through a single assistant turn and its tool calls. */
+export type ToolContext = {
   history?: Array<{ role: "user" | "assistant"; text: string }>;
   knownLocation?: string | null;
   userMemory?: string;
   prompt?: string;
   localToolServices?: LocalToolServices;
   mcp?: McpManager;
-  onToolEvent?: (phase: "start" | "end" | "error", result: GeminiToolEventResult) => void;
+  onToolEvent?: (phase: "start" | "end" | "error", result: ToolEventResult) => void;
 };
 
-const systemPromptPath = path.join(appRoot, "systemprompt.txt");
-
-type GeminiFunctionCall = {
+/** A tool call requested by the model, normalized across transports. */
+export type ToolFunctionCall = {
   name?: string;
   args?: unknown;
   id?: string;
 };
 
-type GeminiPart = {
-  text?: string;
-  functionCall?: GeminiFunctionCall;
-  functionResponse?: { name: string; id?: string; response: Record<string, unknown> };
-  inlineData?: { mimeType: string; data: string };
-};
-
-type GeminiContent = {
-  role: "user" | "model";
-  parts: GeminiPart[];
-};
-
-type GeminiResponse = {
-  candidates?: Array<{ content?: GeminiContent }>;
-  error?: { message?: string } | string;
-};
-
-type GeminiToolEventResult =
+type ToolEventResult =
   | (LocalToolResult & { args?: LocalToolArgs; durationMs?: number })
   | { name: string; text: string; args?: LocalToolArgs; durationMs?: number }
   | { name: string; error: string; args?: LocalToolArgs; durationMs?: number };
 
 type ToolCallResult = LocalToolResult | { name: string; text: string } | { name: string; error: string };
 
-export function resolveGeminiApiKey(config: AppConfig): string {
-  const key =
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.GOOGLE_API_KEY?.trim() ||
-    process.env.GOOGLE_AI_STUDIO_API_KEY?.trim() ||
-    config.gemini.apiKey?.trim() ||
-    "";
-  if (!key) {
-    throw new Error(
-      "Missing Google AI Studio API key. Set GEMINI_API_KEY in v3/.env or your environment."
-    );
-  }
-  return key;
-}
+type ToolCallOutcome = {
+  call: ToolFunctionCall;
+  result: ToolCallResult;
+};
 
-function geminiBaseUrl(config: AppConfig): string {
-  return (config.gemini.baseUrl?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
-}
-
-export async function generateWithGemini(
-  prompt: string,
-  config: AppConfig,
-  context: GeminiContext = {}
-): Promise<string> {
-  context.prompt = prompt;
-  const contents = buildContents(prompt, context);
-  for (let step = 0; step < 3; step += 1) {
-    const assistant = await callGemini(config, contents, true, context.mcp);
-    contents.push(assistant);
-    const toolCalls = extractFunctionCalls(assistant);
-    if (!toolCalls.length) {
-      const content = extractText(assistant).trim();
-      if (content) {
-        return content;
-      }
-      contents.push({
-        role: "user",
-        parts: [
-          {
-            text: "Your previous message was empty. Provide a concise final answer now. If tool data is available, use it."
-          }
-        ]
-      });
-      continue;
-    }
-
-    const toolResults = await Promise.all(
-      toolCalls.slice(0, 6).map((call) => executeToolCall(call, context, config, true))
-    );
-    contents.push({
-      role: "user",
-      parts: toolResults.map((entry) => ({
-        functionResponse: {
-          name: entry.call.name ?? "tool",
-          id: entry.call.id,
-          response: toResponseObject(entry.result)
-        }
-      }))
-    });
-  }
-
-  const final = await callGemini(config, contents, false, context.mcp);
-  const content = extractText(final).trim();
-  if (content) {
-    return content;
-  }
-  const latestTool = [...contents]
-    .reverse()
-    .flatMap((entry) => entry.parts)
-    .find((part) => part.functionResponse);
-  return latestTool?.functionResponse
-    ? summarizeToolFallback(latestTool.functionResponse.response)
-    : "I did not get a response from Gemini.";
-}
-
-async function callGemini(
-  config: AppConfig,
-  contents: GeminiContent[],
-  includeTools: boolean,
-  mcp?: McpManager
-): Promise<GeminiContent> {
-  const apiKey = resolveGeminiApiKey(config);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
-  const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: readSystemPrompt(mcp) }] },
-    contents,
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 1024,
-      ...thinkingConfig(config.gemini.model, config.gemini.think)
-    }
-  };
-  if (includeTools) {
-    const mcpDeclarations = mcp?.listToolDeclarations() ?? [];
-    const functionDeclarations = mcpDeclarations.length
-      ? [...FUNCTION_DECLARATIONS, ...mcpDeclarations]
-      : FUNCTION_DECLARATIONS;
-    body.tools = [{ functionDeclarations }];
-  }
-
-  const url = `${geminiBaseUrl(config)}/models/${encodeURIComponent(config.gemini.model)}:generateContent`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-    signal: controller.signal,
-    body: JSON.stringify(body)
-  }).finally(() => clearTimeout(timeout));
-
-  if (!response.ok) {
-    const detail = await safeErrorMessage(response);
-    throw new Error(`Gemini returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
-  }
-
-  const payload = (await response.json()) as GeminiResponse;
-  const errorMessage = typeof payload.error === "string" ? payload.error : payload.error?.message;
-  if (errorMessage) {
-    throw new Error(errorMessage);
-  }
-
-  return payload.candidates?.[0]?.content ?? { role: "model", parts: [] };
-}
-
-async function safeErrorMessage(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as GeminiResponse;
-    if (typeof payload.error === "string") {
-      return payload.error;
-    }
-    return payload.error?.message ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function thinkingConfig(model: string, think: GeminiThinkLevel | undefined): Record<string, unknown> {
-  const supportsThinking = /2\.5|gemini-3|flash-thinking/i.test(model);
-  if (!supportsThinking) {
-    return {};
-  }
-  const budget: Record<string, number> = { null: 0, low: 0, medium: 2048, high: 8192 };
-  const key = think ?? "null";
-  return { thinkingConfig: { thinkingBudget: budget[key] ?? 0 } };
-}
-
-function readSystemPrompt(mcp?: McpManager): string {
+/** Compose the full system prompt: base prompt + dynamic skills + MCP tool list. */
+export function readSystemPrompt(mcp?: McpManager): string {
   return [fs.readFileSync(systemPromptPath, "utf-8").trim(), buildDynamicSkillPrompt(), buildMcpPrompt(mcp)]
     .filter(Boolean)
     .join("\n\n");
@@ -221,57 +71,7 @@ function buildMcpPrompt(mcp?: McpManager): string {
   return lines.join("\n");
 }
 
-function buildContents(prompt: string, context: GeminiContext): GeminiContent[] {
-  const contents: GeminiContent[] = [];
-  if (context.history?.length) {
-    for (const turn of context.history.slice(-10)) {
-      contents.push({ role: turn.role === "assistant" ? "model" : "user", parts: [{ text: turn.text }] });
-    }
-  }
-  if (context.knownLocation) {
-    contents.push({
-      role: "user",
-      parts: [
-        {
-          text:
-            `Remembered user location: ${context.knownLocation}. ` +
-            "Use this as a default only when the user did not ask for a different location."
-        }
-      ]
-    });
-  }
-  if (context.userMemory?.trim()) {
-    contents.push({
-      role: "user",
-      parts: [
-        {
-          text:
-            "Persistent user memory. Use these facts as background context, but do not let them override the user's current request:\n" +
-            context.userMemory.trim()
-        }
-      ]
-    });
-  }
-  contents.push({ role: "user", parts: [{ text: prompt }] });
-  return contents;
-}
-
-function extractFunctionCalls(content: GeminiContent): GeminiFunctionCall[] {
-  return content.parts.map((part) => part.functionCall).filter((call): call is GeminiFunctionCall => Boolean(call));
-}
-
-function extractText(content: GeminiContent): string {
-  return content.parts
-    .map((part) => part.text ?? "")
-    .filter(Boolean)
-    .join(" ");
-}
-
-function toResponseObject(result: ToolCallResult): Record<string, unknown> {
-  return result as unknown as Record<string, unknown>;
-}
-
-const FUNCTION_DECLARATIONS = [
+export const FUNCTION_DECLARATIONS = [
   {
     name: "get_weather",
     description:
@@ -468,17 +268,13 @@ const FUNCTION_DECLARATIONS = [
   }
 ];
 
-type ToolCallOutcome = {
-  call: GeminiFunctionCall;
-  result: ToolCallResult;
-};
-
-async function executeToolCall(
-  call: GeminiFunctionCall,
-  context: GeminiContext,
-  config: AppConfig,
-  allowSubAgent: boolean
-): Promise<ToolCallOutcome> {
+/**
+ * Execute a single tool call. MCP tools are dispatched to the connected server;
+ * everything else maps to a local on-device tool. The `run_sub_agent` tool is
+ * handled by the model client (which owns the conversation loop), so it never
+ * reaches here.
+ */
+export async function executeToolCall(call: ToolFunctionCall, context: ToolContext): Promise<ToolCallOutcome> {
   if (context.mcp?.isMcpTool(call.name)) {
     return executeMcpToolCall(call, context);
   }
@@ -493,15 +289,6 @@ async function executeToolCall(
   const startedAt = Date.now();
   try {
     const args = resolveToolArgs(toolName, parseToolArgs(call.args), context.prompt ?? "");
-    if (toolName === "sub_agent") {
-      if (!allowSubAgent) {
-        throw new Error("Sub-agent recursion is not allowed.");
-      }
-      context.onToolEvent?.("start", { name: "sub_agent", text: "Running sub agent" });
-      const result = await runSubAgent(String(args.task ?? context.prompt ?? ""), config, context);
-      context.onToolEvent?.("end", { ...result, args, durationMs: Date.now() - startedAt });
-      return { call, result };
-    }
     context.onToolEvent?.("start", {
       name: toolName,
       args,
@@ -518,7 +305,7 @@ async function executeToolCall(
   }
 }
 
-async function executeMcpToolCall(call: GeminiFunctionCall, context: GeminiContext): Promise<ToolCallOutcome> {
+async function executeMcpToolCall(call: ToolFunctionCall, context: ToolContext): Promise<ToolCallOutcome> {
   const name = String(call.name ?? "mcp_tool");
   const args = parseToolArgs(call.args) as Record<string, unknown>;
   const startedAt = Date.now();
@@ -544,11 +331,7 @@ async function executeMcpToolCall(call: GeminiFunctionCall, context: GeminiConte
   }
 }
 
-function resolveToolArgs(
-  toolName: LocalToolName | "sub_agent",
-  args: LocalToolArgs,
-  prompt: string
-): LocalToolArgs {
+function resolveToolArgs(toolName: LocalToolName, args: LocalToolArgs, prompt: string): LocalToolArgs {
   if ((toolName === "weather" || toolName === "time") && !args.location) {
     return { ...args, location: extractLocationFromPrompt(prompt) };
   }
@@ -558,36 +341,7 @@ function resolveToolArgs(
   return args;
 }
 
-async function runSubAgent(task: string, config: AppConfig, context: GeminiContext): Promise<LocalToolResult> {
-  const contents: GeminiContent[] = [
-    { role: "user", parts: [{ text: `Task: ${task}` }] }
-  ];
-  for (let step = 0; step < 4; step += 1) {
-    const assistant = await callGemini(config, contents, true, context.mcp);
-    contents.push(assistant);
-    const toolCalls = extractFunctionCalls(assistant).filter((call) => call.name !== "run_sub_agent");
-    if (!toolCalls.length) {
-      return { name: "sub_agent", text: extractText(assistant).trim() || "Sub-agent completed without details." };
-    }
-    const results = await Promise.all(
-      toolCalls.slice(0, 4).map((call) => executeToolCall(call, context, config, false))
-    );
-    contents.push({
-      role: "user",
-      parts: results.map((entry) => ({
-        functionResponse: {
-          name: entry.call.name ?? "tool",
-          id: entry.call.id,
-          response: toResponseObject(entry.result)
-        }
-      }))
-    });
-  }
-  const final = await callGemini(config, contents, false, context.mcp);
-  return { name: "sub_agent", text: extractText(final).trim() || "Sub-agent finished its tool loop." };
-}
-
-function normalizeToolName(name: string | undefined): LocalToolName | "sub_agent" | null {
+function normalizeToolName(name: string | undefined): LocalToolName | null {
   if (name === "get_weather") {
     return "weather";
   }
@@ -618,9 +372,6 @@ function normalizeToolName(name: string | undefined): LocalToolName | "sub_agent
   if (name === "control_spotify") {
     return "spotify";
   }
-  if (name === "run_sub_agent") {
-    return "sub_agent";
-  }
   if (name === "update_user_memory") {
     return "memory";
   }
@@ -642,16 +393,4 @@ function parseToolArgs(args: unknown): LocalToolArgs {
     return args as LocalToolArgs;
   }
   return {};
-}
-
-function summarizeToolFallback(response: Record<string, unknown>): string {
-  const text = response.text;
-  if (typeof text === "string" && text.trim()) {
-    return text;
-  }
-  const error = response.error;
-  if (typeof error === "string" && error.trim()) {
-    return `Tool failed: ${error}`;
-  }
-  return "Tool completed, but Gemini did not produce a final response.";
 }

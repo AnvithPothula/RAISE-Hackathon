@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readConfig, writeConfig } from "./config.js";
-import { generateWithGemini, resolveGeminiApiKey } from "./geminiClient.js";
+import { analyzeImageWithOllama, generateWithOllama, resolveActiveModel } from "./ollamaClient.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
@@ -66,7 +66,7 @@ const localToolServices: LocalToolServices = {
   userMemory,
   spotify: config.spotify,
   captureScreen,
-  analyzeScreen: analyzeScreenWithGemini,
+  analyzeScreen: (imagePath, prompt) => analyzeImageWithOllama(imagePath, prompt, config),
   openApp: openLocalApp,
   openWebsite: openExternalWebsite,
   onAlarm: (alarm) => {
@@ -198,7 +198,7 @@ pi.on("event", (event) => {
   if (event.type === "exit") {
     if (pendingPiPrompts.size > 0) {
       broadcast("pi:event", event);
-      void respondWithFallback(activePrompt, "Pi exited while handling the request. Using direct Gemini fallback.");
+      void respondWithFallback(activePrompt, "Pi exited while handling the request. Using local Gemma.");
     } else {
       broadcast("assistant:state", "idle");
     }
@@ -206,7 +206,7 @@ pi.on("event", (event) => {
   }
   if ((event.type === "error" || event.type === "unavailable") && pendingPiPrompts.size > 0) {
     broadcast("pi:event", event);
-    void respondWithFallback(activePrompt, "Pi failed while handling the request. Using direct Gemini fallback.");
+    void respondWithFallback(activePrompt, "Pi failed while handling the request. Using local Gemma.");
     return;
   }
   if (event.type !== "stderr") {
@@ -223,7 +223,7 @@ pi.on("event", (event) => {
     if (isUnsupportedToolModelError(piError)) {
       void respondWithFallback(
         activePrompt,
-        `${config.gemini.model} cannot run Pi tool calls. Using direct Gemini fallback.`
+        "Pi tool model unavailable. Using local Gemma."
       );
       return;
     }
@@ -342,7 +342,7 @@ async function handleUserPrompt(prompt: string): Promise<void> {
       tool: lastRetryableTool.name,
       args: lastRetryableTool.args
     });
-    await retryLastTool(turnId, "gemini");
+    await retryLastTool(turnId, "gemma");
     return;
   }
 
@@ -418,15 +418,15 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
   }
 
   try {
-    debug(`echo gemini response starting device=${context.deviceId} promptChars=${prompt.length}`);
-    emitDebugEvent("gemini request", {
+    debug(`echo gemma response starting device=${context.deviceId} promptChars=${prompt.length}`);
+    emitDebugEvent("gemma request", {
       turnId,
       source: "echo",
-      model: config.gemini.model,
+      model: resolveActiveModel(config),
       promptChars: prompt.length
     });
     const text = sanitizeAssistantText(
-      await generateWithGemini(prompt, config, {
+      await generateWithOllama(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
@@ -436,7 +436,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
           if (phase === "start") {
             toolUsed = true;
           }
-          broadcastLocalToolEvent(phase, { ...result, route: "gemini", source: "echo", turnId });
+          broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "echo", turnId });
         }
       })
     );
@@ -445,7 +445,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
       return "I already moved on to another request.";
     }
     activePrompt = null;
-    emitDebugEvent("gemini response", { turnId, source: "echo", chars: text.length, toolUsed });
+    emitDebugEvent("gemma response", { turnId, source: "echo", chars: text.length, toolUsed });
     rememberTurn("assistant", text);
     broadcastAssistantText(text, "echo");
     broadcast("assistant:state", "speaking");
@@ -456,9 +456,9 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     }, 5000);
     return { text, toolUsed };
   } catch (error) {
-    const message = `I could not reach Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
-    debug(`echo gemini response failed ${String(error)}`);
-    emitDebugEvent("gemini failed", { turnId, source: "echo", error: String(error) });
+    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
+    debug(`echo gemma response failed ${String(error)}`);
+    emitDebugEvent("gemma failed", { turnId, source: "echo", error: String(error) });
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -473,7 +473,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
   const invocation = directInvocation ?? contextualInvocation;
   const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
   if (!invocation) {
-    emitDebugEvent("route gemini", {
+    emitDebugEvent("route gemma", {
       turnId: context.turnId,
       source: context.source,
       previousTool: lastRetryableTool?.name,
@@ -604,45 +604,45 @@ async function runStoredToolRetry(): Promise<string> {
 async function respondDirect(prompt: string, turnId = activeTurnId): Promise<void> {
   clearPendingPiFallbacks();
   try {
-    debug(`gemini response starting promptChars=${prompt.length}`);
-    emitDebugEvent("gemini request", {
+    debug(`gemma response starting promptChars=${prompt.length}`);
+    emitDebugEvent("gemma request", {
       turnId,
       source: "typed",
-      model: config.gemini.model,
+      model: resolveActiveModel(config),
       promptChars: prompt.length
     });
     broadcast("assistant:state", "thinking");
     const text = sanitizeAssistantText(
-      await generateWithGemini(prompt, config, {
+      await generateWithOllama(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
         localToolServices,
         mcp,
         onToolEvent: (phase, result) =>
-          broadcastLocalToolEvent(phase, { ...result, route: "gemini", source: "typed", turnId })
+          broadcastLocalToolEvent(phase, { ...result, route: "gemma", source: "typed", turnId })
       })
     );
     if (turnId !== activeTurnId) {
-      debug(`gemini response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale gemini response ignored", { turnId, activeTurnId, source: "typed" });
+      debug(`gemma response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale gemma response ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
-    debug(`gemini response complete chars=${text.length}`);
-    emitDebugEvent("gemini response", { turnId, source: "typed", chars: text.length });
+    debug(`gemma response complete chars=${text.length}`);
+    emitDebugEvent("gemma response", { turnId, source: "typed", chars: text.length });
     activePrompt = null;
     rememberTurn("assistant", text);
-    broadcastAssistantText(text, "gemini");
+    broadcastAssistantText(text, "gemma");
     pythonWorker.send({ type: "speak", text });
   } catch (error) {
     if (turnId !== activeTurnId) {
-      debug(`gemini error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale gemini error ignored", { turnId, activeTurnId, source: "typed" });
+      debug(`gemma error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale gemma error ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
-    debug(`gemini response failed ${String(error)}`);
-    emitDebugEvent("gemini failed", { turnId, source: "typed", error: String(error) });
-    const message = `I could not reach Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
+    debug(`gemma response failed ${String(error)}`);
+    emitDebugEvent("gemma failed", { turnId, source: "typed", error: String(error) });
+    const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -662,10 +662,10 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
   }
 
   try {
-    debug(`gemini response starting reason="${reason}" promptChars=${prompt.length}`);
-    emitDebugEvent("gemini fallback request", {
+    debug(`gemma response starting reason="${reason}" promptChars=${prompt.length}`);
+    emitDebugEvent("gemma fallback request", {
       source: "fallback",
-      model: config.gemini.model,
+      model: resolveActiveModel(config),
       promptChars: prompt.length,
       reason
     });
@@ -675,7 +675,7 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
       payload: { type: "status", text: reason }
     });
     const text = sanitizeAssistantText(
-      await generateWithGemini(prompt, config, {
+      await generateWithOllama(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
@@ -684,16 +684,16 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
         onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" })
       })
     );
-    debug(`gemini response complete chars=${text.length}`);
-    emitDebugEvent("gemini fallback response", { source: "fallback", chars: text.length });
+    debug(`gemma response complete chars=${text.length}`);
+    emitDebugEvent("gemma fallback response", { source: "fallback", chars: text.length });
     activePrompt = null;
     rememberTurn("assistant", text);
-    broadcastAssistantText(text, "gemini-fallback");
+    broadcastAssistantText(text, "gemma-fallback");
     pythonWorker.send({ type: "speak", text });
   } catch (error) {
-    debug(`gemini response failed ${String(error)}`);
-    emitDebugEvent("gemini fallback failed", { source: "fallback", error: String(error) });
-    const message = `I could not reach Pi or Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
+    debug(`gemma response failed ${String(error)}`);
+    emitDebugEvent("gemma fallback failed", { source: "fallback", error: String(error) });
+    const message = `I could not reach Pi or the local Gemma model. Make sure Ollama is running and '${process.env.PYTHOS_OLLAMA_MODEL || "gemma4:12b"}' is pulled, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -799,58 +799,6 @@ async function captureScreen(): Promise<{ path: string; width: number; height: n
   const filePath = path.join(app.getPath("temp"), `pythos-screen-${Date.now()}.png`);
   fs.writeFileSync(filePath, image.toPNG());
   return { path: filePath, width: size.width, height: size.height };
-}
-
-async function analyzeScreenWithGemini(imagePath: string, prompt: string): Promise<string> {
-  try {
-    const apiKey = resolveGeminiApiKey(config);
-    const image = fs.readFileSync(imagePath).toString("base64");
-    const baseUrl = (config.gemini.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta").replace(
-      /\/+$/,
-      ""
-    );
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
-    const url = `${baseUrl}/models/${encodeURIComponent(config.gemini.model)}:generateContent`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      signal: controller.signal,
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt || "Describe what is on this screen." },
-              { inlineData: { mimeType: "image/png", data: image } }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 512
-        }
-      })
-    }).finally(() => clearTimeout(timeout));
-    if (!response.ok) {
-      return `I captured the screen, but ${config.gemini.model} could not analyze it: HTTP ${response.status}.`;
-    }
-    const payload = (await response.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      error?: { message?: string };
-    };
-    if (payload.error?.message) {
-      return `I captured the screen, but ${config.gemini.model} could not analyze images: ${payload.error.message}.`;
-    }
-    const text = (payload.candidates?.[0]?.content?.parts ?? [])
-      .map((part) => part.text ?? "")
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-    return text || "I captured the screen, but the vision response was empty.";
-  } catch (error) {
-    return `I captured the screen, but image analysis failed: ${String(error)}.`;
-  }
 }
 
 async function openExternalWebsite(url: string): Promise<void> {

@@ -39,8 +39,6 @@ export type ConversationItem = {
   timestamp: number;
 };
 
-export type GeminiThinkLevel = "low" | "medium" | "high" | null;
-
 export type McpTransportKind = "stdio" | "http";
 
 export type McpServerConfig = {
@@ -89,7 +87,7 @@ export type AppConfig = {
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
-  gemini: { model: string; baseUrl?: string; apiKey?: string; think?: GeminiThinkLevel };
+  ollama: { model: string; baseUrl?: string; lowResourceModel?: string };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };

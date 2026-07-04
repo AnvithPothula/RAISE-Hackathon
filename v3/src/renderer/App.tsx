@@ -428,22 +428,11 @@ export function App() {
             <div className="settings-grid">
               <Setting label="Assistant state" value={state} />
               <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-              <Setting label="Gemini model" value={settingsDraft?.gemini.model ?? "gemma-4-26b-a4b-it"} />
+              <Setting label="Brain (local, on-device)" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
               <SettingInput
-                label="Gemini API endpoint"
-                value={settingsDraft?.gemini.baseUrl ?? ""}
-                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "baseUrl"], value)}
-              />
-              <SettingSelect
-                label="Thinking level"
-                value={settingsDraft?.gemini.think ?? "null"}
-                options={[
-                  { label: "Off", value: "null" },
-                  { label: "Low", value: "low" },
-                  { label: "Medium", value: "medium" },
-                  { label: "High", value: "high" }
-                ]}
-                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "think"], value === "null" ? null : value)}
+                label="Ollama endpoint (local)"
+                value={settingsDraft?.ollama?.baseUrl ?? "http://127.0.0.1:11434"}
+                onChange={(value) => updateDraft(setSettingsDraft, ["ollama", "baseUrl"], value)}
               />
               <SettingInput
                 label="Spotify client ID"
@@ -456,7 +445,7 @@ export function App() {
                 onChange={(value) => updateDraft(setSettingsDraft, ["spotify", "redirectUri"], value)}
               />
               <SettingToggle
-                label="Low resource mode"
+                label={`Low resource mode (Gemma ${settingsDraft?.ollama?.lowResourceModel ?? "gemma4:e2b"})`}
                 checked={Boolean(settingsDraft?.python?.lowResourceMode)}
                 onChange={(value) => updateDraft(setSettingsDraft, ["python", "lowResourceMode"], value)}
               />
@@ -842,7 +831,7 @@ function summarizeEvent(payload: unknown): string {
     }
     if (typeof record.code === "number" || record.code === null) {
       if (record.code === 4294967295) {
-        return "Pi process exited. Direct Gemini fallback will handle active requests.";
+        return "Pi process exited. Local Gemma will handle active requests.";
       }
       return `Process exited with code ${String(record.code ?? "unknown")}`;
     }
@@ -869,7 +858,7 @@ function labelEvent(event: PiEvent): string {
       return "Debug";
     }
     if (type === "message_end") {
-      return event.type === "gemini-fallback" ? "Gemini Fallback" : "Assistant";
+      return event.type === "gemma-fallback" ? "Gemma (fallback)" : "Assistant";
     }
     if (type === "tool_execution_start") {
       return `Tool Started - ${humanToolName(record.name)}`;
@@ -1021,10 +1010,11 @@ function fullEventPayload(payload: unknown): string {
 }
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
+  const model = config.ollama?.model ?? "gemma4:12b";
   if (config.pi.enabled && status?.available) {
-    return `${config.gemini.model} direct + Pi tools`;
+    return `Gemma ${model} (local) + Pi tools`;
   }
-  return `${config.gemini.model} direct`;
+  return `Gemma ${model} (local, on-device)`;
 }
 
 function formatPiStatus(status: PiStatus | null): string {

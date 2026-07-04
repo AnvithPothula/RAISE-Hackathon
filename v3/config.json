@@ -1,7 +1,7 @@
 {
   "python": {
     "workerModule": "pythos.worker",
-    "lowResourceMode": true
+    "lowResourceMode": false
   },
   "models": {
     "wakeWord": "Models/wakeword/pythos.onnx",
@@ -20,10 +20,10 @@
     "silenceTimeoutSeconds": 3,
     "ttsLengthScale": 1.15
   },
-  "gemini": {
-    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
-    "model": "gemma-4-26b-a4b-it",
-    "think": "low"
+  "ollama": {
+    "baseUrl": "http://127.0.0.1:11434",
+    "model": "gemma4:12b",
+    "lowResourceModel": "gemma4:e2b"
   },
   "gradium": {
     "baseWsUrl": "wss://api.gradium.ai/api",
@@ -50,7 +50,7 @@
       ".pi/skills"
     ],
     "cwd": ".",
-    "enabled": true
+    "enabled": false
   },
   "mcp": {
     "enabled": false,

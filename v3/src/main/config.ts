@@ -8,9 +8,6 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 export const appRoot = path.resolve(dirname, "../..");
 const configPath = path.join(appRoot, "config.json");
 
-/** The only language model Pythos is allowed to use. */
-export const FORCED_GEMINI_MODEL = "gemma-4-26b-a4b-it";
-
 loadEnvFile(path.join(appRoot, ".env"));
 
 function loadEnvFile(envPath: string): void {
@@ -59,29 +56,14 @@ export function readConfig(): RawConfig {
     config.pi.command = process.env.PYTHOS_PI_COMMAND;
   }
 
-  enforceForcedModel(config);
-
   return config;
 }
 
 export function writeConfig(config: AppConfig): RawConfig {
   const nextConfig = structuredClone(config) as AppConfig;
   nextConfig.pi.args = nextConfig.pi.args.filter((arg) => arg !== "--no-tools");
-  enforceForcedModel(nextConfig);
   fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8");
   return readConfig();
-}
-
-/**
- * Pin every model reference to {@link FORCED_GEMINI_MODEL}, ignoring any value
- * from config.json, saved settings, or the PYTHOS_GEMINI_MODEL env override.
- */
-function enforceForcedModel(config: AppConfig): void {
-  config.gemini.model = FORCED_GEMINI_MODEL;
-  const modelArgIndex = config.pi.args.findIndex((arg) => arg === "--model");
-  if (modelArgIndex >= 0 && config.pi.args[modelArgIndex + 1] !== undefined) {
-    config.pi.args[modelArgIndex + 1] = `gemini/${FORCED_GEMINI_MODEL}`;
-  }
 }
 
 export function resolveWorkerPython(): string {

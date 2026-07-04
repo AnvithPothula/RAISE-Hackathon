@@ -1,108 +1,103 @@
 ======================================================================
- Pythos v3 - API Key / Environment Setup
+ Pythos v3 - Setup & Environment (Keys are OPTIONAL)
 ======================================================================
 
-This is a PUBLIC repo, so NO API keys are committed here. Each user
-supplies their own keys via environment variables. The Python worker
-inherits the environment of whatever shell launches the app, so the
-keys below must be exported in that shell BEFORE you start Pythos.
+Pythos runs its AI brain ENTIRELY ON-DEVICE. The language model, tool
+calling, and screen vision all run locally through Ollama + Gemma 4 —
+nothing about your prompts or screen ever leaves the machine, and NO
+cloud LLM API key is required.
 
-Required for the LLM (language + vision):
-  GEMINI_API_KEY    -> Google AI Studio (Gemini) API (get it at
-                       https://aistudio.google.com/apikey)
+This is a PUBLIC repo, so no keys are committed. The only keys below are
+for OPTIONAL cloud enhancements (studio-quality voice, web search). The
+Python worker inherits the environment of whatever shell launches the
+app, so any keys you do use must be exported in that shell BEFORE you
+start Pythos.
 
-Required for speech features:
-  GRADIUM_API_KEY   -> Text-to-Speech + Speech-to-Text (get it at
+
+----------------------------------------------------------------------
+ REQUIRED: local model runtime (no API key, just a local install)
+----------------------------------------------------------------------
+
+The brain is Gemma 4 served by Ollama on your own machine.
+
+  1. Install Ollama:            https://ollama.com/download
+                                (macOS: `brew install ollama`)
+  2. Start the server:          `ollama serve`   (runs on 127.0.0.1:11434)
+  3. Pull the model(s):         `ollama pull gemma4:12b`
+                                `ollama pull gemma4:e2b`   (optional, low-resource mode)
+
+     Or use the helper script:  ./scripts/install-ollama-models.sh
+                                .\scripts\install-ollama-models.ps1
+
+  gemma4:12b  (~7.6 GB, 256K context) is the default and best at tool calls.
+  gemma4:e2b  (~1-2 GB) is the low-resource fallback — enable "Low resource
+              mode" in Settings (or set python.lowResourceMode=true in
+              config.json) to use it. It must be pulled first.
+
+That is the ONLY hard requirement for the assistant. Typed chat, tools,
+sub-agents, and screen vision all work with just Ollama + Gemma, offline.
+
+
+----------------------------------------------------------------------
+ OPTIONAL: cloud voice (speech-to-text + text-to-speech)
+----------------------------------------------------------------------
+
+  GRADIUM_API_KEY   -> Studio-quality streaming voice (get it at
                        https://studio.gradium.ai)
 
-Optional (existing integrations):
-  PYTHOS_WEB_SEARCH_KEY  -> web search
+Voice input/output (wake word -> STT -> TTS) currently uses the Gradium
+cloud API, so speaking to Pythos needs GRADIUM_API_KEY. TYPED prompts in
+the desktop UI work fully offline with no key. If GRADIUM_API_KEY is not
+set, Pythos still runs and emits a clear "GRADIUM_API_KEY is not set"
+notice; only spoken voice is unavailable.
+
+
+----------------------------------------------------------------------
+ OPTIONAL: other integrations
+----------------------------------------------------------------------
+
+  PYTHOS_OLLAMA_MODEL    -> override the Gemma model (default gemma4:12b)
+  PYTHOS_OLLAMA_URL      -> override the Ollama endpoint (default
+                            http://127.0.0.1:11434)
+  PYTHOS_WEB_SEARCH_KEY  -> web search tool
   SPOTIFY_CLIENT_ID      -> Spotify control
-  PYTHOS_GEMINI_MODEL    -> override the Gemini model (default gemini-2.5-flash)
-  PYTHOS_PI_COMMAND      -> override the `pi` executable
+
+Note: GEMINI_API_KEY / GOOGLE_API_KEY are NO LONGER USED by the core
+assistant (it is fully local now). They are only relevant if you manually
+enable the experimental Pi tool bridge (pi.enabled=true in config.json),
+which is off by default.
 
 
 ----------------------------------------------------------------------
- Quick start: create a local .env file
+ Quick start: create a local .env file (optional)
 ----------------------------------------------------------------------
 
-The fastest way to add your Gemini key is to copy the example .env and
-append the key. This file is gitignored so it will NOT be committed.
-
-# Windows - PowerShell:
-cd e:\RAISE-Hackathon\v3
-Copy-Item .env.example .env -Force
-Add-Content .env "GEMINI_API_KEY=your_key_here"
+The app does NOT auto-load .env; export the vars in your shell, or source
+the file before launching. The file is gitignored so it will NOT commit.
 
 # macOS / Linux (bash or zsh):
 cd /path/to/RAISE-Hackathon/v3
 cp .env.example .env
-echo 'GEMINI_API_KEY=your_key_here' >> .env
-
-The same GEMINI_API_KEY is used by both the direct Gemini client and
-the Pi bridge. Add GRADIUM_API_KEY the same way for speech features.
-
-
-----------------------------------------------------------------------
- macOS / Linux (bash or zsh)
-----------------------------------------------------------------------
-
-# Current terminal session only (must re-run each new terminal):
-export GRADIUM_API_KEY="your_gradium_api_key_here"
-
-# Then launch from the SAME terminal:
-npm run dev        # (or however you normally start the app)
-
-# Make it permanent (add to ~/.zshrc or ~/.bashrc, then reopen the shell):
-echo 'export GRADIUM_API_KEY="your_gradium_api_key_here"' >> ~/.zshrc
-source ~/.zshrc
-
-
-----------------------------------------------------------------------
- Windows - PowerShell
-----------------------------------------------------------------------
-
-# Current session only:
-$env:GRADIUM_API_KEY = "your_gradium_api_key_here"
-
-# Then launch from the SAME PowerShell window:
+echo 'GRADIUM_API_KEY=your_key_here' >> .env      # only if you want voice
+set -a; source ./.env; set +a
 npm run dev
 
-# Make it permanent for your user account (reopen PowerShell afterwards):
-setx GRADIUM_API_KEY "your_gradium_api_key_here"
+# Windows - PowerShell:
+cd path\to\RAISE-Hackathon\v3
+Copy-Item .env.example .env -Force
+Add-Content .env "GRADIUM_API_KEY=your_key_here"   # only if you want voice
 
 
 ----------------------------------------------------------------------
- Windows - Command Prompt (cmd.exe)
+ Verify your setup
 ----------------------------------------------------------------------
 
-# Current session only:
-set GRADIUM_API_KEY=your_gradium_api_key_here
+  Ollama up + model pulled:
+    curl http://127.0.0.1:11434/api/tags        # should list gemma4:12b
 
-# Permanent for your user account (reopen cmd afterwards):
-setx GRADIUM_API_KEY "your_gradium_api_key_here"
+  Voice key visible (only if using voice):
+    macOS / Linux:   echo $GRADIUM_API_KEY
+    PowerShell:      echo $env:GRADIUM_API_KEY
 
-
-----------------------------------------------------------------------
- Optional: use a local .env file (gitignored)
-----------------------------------------------------------------------
-
-You can keep keys in v3/.env (copied from v3/.env.example). This file
-is gitignored so it will NOT be committed. NOTE: the app does not load
-.env automatically, so still export the vars in your shell, e.g.:
-
-  # macOS / Linux - load every KEY=VALUE line from .env into the shell:
-  set -a; source ./.env; set +a
-  npm run dev
-
-
-----------------------------------------------------------------------
- Verify the key is visible to the app
-----------------------------------------------------------------------
-
-  macOS / Linux:   echo $GRADIUM_API_KEY
-  PowerShell:      echo $env:GRADIUM_API_KEY
-  cmd.exe:         echo %GRADIUM_API_KEY%
-
-If it prints your key, launch the app from that same shell. If speech
-fails, Pythos emits a clear "GRADIUM_API_KEY is not set" error event.
+If `ollama list` shows gemma4:12b, launch the app and start talking (or
+typing) — the brain is already running locally.

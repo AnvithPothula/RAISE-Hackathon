@@ -29,12 +29,6 @@ class AudioConfig:
 
 
 @dataclass(frozen=True)
-class GeminiConfig:
-    base_url: str
-    model: str
-
-
-@dataclass(frozen=True)
 class GradiumConfig:
     api_key: str
     base_ws_url: str
@@ -58,7 +52,6 @@ class WorkerConfig:
     low_resource_mode: bool
     models: ModelPaths
     audio: AudioConfig
-    gemini: GeminiConfig
     gradium: GradiumConfig
 
 
@@ -91,10 +84,7 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
     python_data = data.get("python", {})
     model_data = data.get("models", {})
     audio_data = data.get("audio", {})
-    gemini_data = data.get("gemini", {})
     gradium_data = data.get("gradium", {})
-
-    model_name = os.environ.get("PYTHOS_GEMINI_MODEL") or gemini_data.get("model", "gemini-2.5-flash")
 
     # API key never lives in config.json (public repo); read it from the environment.
     # A config.json "apiKey" is honoured only as a local fallback for convenience.
@@ -119,10 +109,6 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
             asr_timeout_seconds=float(audio_data.get("asrTimeoutSeconds", 10)),
             silence_timeout_seconds=float(audio_data.get("silenceTimeoutSeconds", 3)),
             tts_length_scale=float(audio_data.get("ttsLengthScale", 0.8)),
-        ),
-        gemini=GeminiConfig(
-            base_url=str(gemini_data.get("baseUrl", "https://generativelanguage.googleapis.com/v1beta")).rstrip("/"),
-            model=str(model_name),
         ),
         gradium=GradiumConfig(
             api_key=gradium_api_key,
