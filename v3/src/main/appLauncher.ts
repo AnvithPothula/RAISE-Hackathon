@@ -21,65 +21,71 @@ export async function openLocalApp(target: string): Promise<AppOpenOutcome> {
   return openLocalAppOnWindows(target);
 }
 
-export function formatMacOpenFailure(target: string, stderr: string): string {
-  const cleaned = stderr.trim();
-  if (/unable to find application/i.test(cleaned)) {
-    return `${target} is not installed or not available on this Mac. I couldn't open it.`;
-  }
-  if (cleaned) {
-    return `I couldn't open ${target}: ${cleaned}`;
-  }
-  return `${target} is unavailable on this Mac. I couldn't open it.`;
+function macAppInstalled(appName: string): Promise<boolean> {
+  const escaped = appName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return new Promise((resolve) => {
+    const child = spawn("osascript", ["-e", `id of application "${escaped}"`], { stdio: "pipe" });
+    child.on("error", () => resolve(false));
+    child.on("exit", (code) => resolve(code === 0));
+  });
 }
 
-async function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
-  try {
-    const result = await runCommand("open", ["-a", target]);
-    if (result.code === 0) {
-      return { opened: true, detail: `Opened ${target}.` };
-    }
-    return { opened: false, detail: formatMacOpenFailure(target, result.stderr) };
-  } catch (error) {
-    return {
-      opened: false,
-      detail: `${target} is unavailable on this Mac. ${String(error)}`
-    };
-  }
+function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
+  return new Promise((resolve) => {
+    void (async () => {
+      const installed = await macAppInstalled(target);
+      if (!installed) {
+        resolve({
+          opened: false,
+          detail: `I couldn't find ${target} on your Mac. Check the name or install it first.`
+        });
+        return;
+      }
+
+      const child = spawn("open", ["-a", target], { stdio: "pipe" });
+      let stderr = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf-8");
+      });
+      child.on("error", (error) => {
+        resolve({ opened: false, detail: `Could not open ${target}: ${error.message}` });
+      });
+      child.on("exit", (code) => {
+        if (code === 0) {
+          resolve({ opened: true, detail: `Opened ${target}.` });
+          return;
+        }
+        const reason = stderr.trim();
+        resolve({
+          opened: false,
+          detail: reason.includes("Unable to find application")
+            ? `I couldn't find ${target} on your Mac. Check the name or install it first.`
+            : reason || `Could not open ${target}.`
+        });
+      });
+    })();
+  });
 }
 
-async function openLocalAppOnLinux(target: string): Promise<AppOpenOutcome> {
-  try {
-    const direct = await runCommand(target, []);
-    if (direct.code === 0) {
-      return { opened: true, detail: `Opened ${target}.` };
-    }
-    const browser = await runCommand("xdg-open", [target]);
-    if (browser.code === 0) {
-      return { opened: true, detail: `Opened ${target}.` };
-    }
-    const reason = browser.stderr || direct.stderr;
-    return {
-      opened: false,
-      detail: reason ? `I couldn't open ${target}: ${reason}` : `${target} is unavailable on this device. I couldn't open it.`
-    };
-  } catch (error) {
-    return {
-      opened: false,
-      detail: `${target} is unavailable on this device. ${String(error)}`
-    };
-  }
-}
-
-function runCommand(command: string, args: string[]): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "pipe" });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
+function openLocalAppOnLinux(target: string): Promise<AppOpenOutcome> {
+  return new Promise((resolve) => {
+    const child = spawn(target, { detached: true, stdio: "ignore" });
+    child.on("error", () => {
+      const fallback = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
+      fallback.on("error", () => {
+        resolve({ opened: false, detail: `I couldn't find or launch ${target} on this system.` });
+      });
+      fallback.on("spawn", () => {
+        fallback.unref();
+        resolve({ opened: true, detail: `Opened ${target}.` });
+      });
     });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      resolve({ code, stderr: stderr.trim() });
+    child.on("spawn", () => {
+      child.unref();
+      resolve({ opened: true, detail: `Opened ${target}.` });
+    });
+  });
+}
     });
   });
 }

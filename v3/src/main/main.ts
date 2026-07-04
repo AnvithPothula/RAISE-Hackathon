@@ -26,6 +26,7 @@ import {
   type LocalToolName,
   type LocalToolServices
 } from "./localTools.js";
+import { normalizeVoiceTranscript, tryParseTextualToolCall, tryRecoverOpenedClaim, garbledTranscriptHint } from "./voiceTranscript.js";
 import { EchoBridge, type EchoBridgeEvent, type EchoPromptReply } from "./echoBridge.js";
 import { UserMemoryStore } from "./userMemory.js";
 import { isRetryPrompt } from "./toolRetry.js";
@@ -349,7 +350,11 @@ ipcMain.handle("app:saveConfig", (_event, nextConfig) => {
   return config;
 });
 
-async function handleUserPrompt(prompt: string): Promise<void> {
+async function handleUserPrompt(rawPrompt: string): Promise<void> {
+  const prompt = normalizeVoiceTranscript(String(rawPrompt ?? "").trim());
+  if (!prompt) {
+    return;
+  }
   const turnId = activeTurnId + 1;
   activeTurnId = turnId;
   broadcast("assistant:state", "thinking");
@@ -375,6 +380,16 @@ async function handleUserPrompt(prompt: string): Promise<void> {
     return;
   }
 
+  const garbledHint = garbledTranscriptHint(prompt);
+  if (garbledHint) {
+    emitDebugEvent("route garbled transcript", { turnId, source: "typed", prompt });
+    activePrompt = null;
+    rememberTurn("assistant", garbledHint);
+    broadcastAssistantText(garbledHint, "clarify");
+    pythonWorker.send({ type: "speak", text: garbledHint });
+    return;
+  }
+
   const directToolText = await runDirectLocalTool(prompt, { turnId, source: "typed" });
   if (directToolText !== null) {
     if (turnId !== activeTurnId) {
@@ -393,7 +408,7 @@ async function handleUserPrompt(prompt: string): Promise<void> {
 }
 
 async function handleEchoPrompt(context: { transcript: string; deviceId: string; sessionId: string }): Promise<EchoPromptReply> {
-  const prompt = context.transcript.trim();
+  const prompt = normalizeVoiceTranscript(context.transcript.trim());
   const turnId = activeTurnId + 1;
   let toolUsed = false;
   activeTurnId = turnId;
@@ -480,15 +495,20 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     }
     activePrompt = null;
     emitDebugEvent("gemma response", { turnId, source: "echo", chars: text.length, toolUsed });
-    rememberTurn("assistant", text);
-    broadcastAssistantText(text, "echo");
+    const recovered = await tryExecuteTextualToolResponse(text, { turnId, source: "echo", prompt });
+    const reply = recovered ?? text;
+    if (recovered) {
+      toolUsed = true;
+    }
+    rememberTurn("assistant", reply);
+    broadcastAssistantText(reply, recovered ? "local-tool-recovered" : "echo");
     broadcast("assistant:state", "speaking");
     setTimeout(() => {
       if (activeTurnId === turnId) {
         broadcast("assistant:state", "idle");
       }
     }, 5000);
-    return { text, toolUsed };
+    return { text: reply, toolUsed };
   } catch (error) {
     const message = `I could not reach the local Gemma model. Make sure Ollama is running and '${resolveActiveModel(config)}' is pulled, then try again. ${String(error)}`;
     debug(`echo gemma response failed ${String(error)}`);
@@ -503,6 +523,51 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
 
 function isStaleTurn(turnId: number): boolean {
   return turnId !== activeTurnId;
+}
+
+async function tryExecuteTextualToolResponse(
+  text: string,
+  context: { turnId: number; source: PromptSource; prompt?: string }
+): Promise<string | null> {
+  const invocation =
+    tryParseTextualToolCall(text) ??
+    (context.prompt ? tryRecoverOpenedClaim(text, context.prompt) : null);
+  if (!invocation) {
+    return null;
+  }
+  const startedAt = Date.now();
+  broadcastLocalToolEvent("start", {
+    name: invocation.name,
+    text: "Tool started",
+    args: invocation.args,
+    route: "textual-recovery",
+    source: context.source,
+    turnId: context.turnId
+  });
+  try {
+    const result = await runNamedLocalTool(invocation.name, invocation.args, knownLocation, localToolServices);
+    broadcastLocalToolEvent("end", {
+      ...result,
+      args: invocation.args,
+      route: "textual-recovery",
+      source: context.source,
+      turnId: context.turnId,
+      durationMs: Date.now() - startedAt
+    });
+    return result.text;
+  } catch (error) {
+    const message = `Tool failed: ${String(error)}`;
+    broadcastLocalToolEvent("error", {
+      name: invocation.name,
+      error: message,
+      args: invocation.args,
+      route: "textual-recovery",
+      source: context.source,
+      turnId: context.turnId,
+      durationMs: Date.now() - startedAt
+    });
+    return message;
+  }
 }
 
 async function runDirectLocalTool(prompt: string, context: { turnId: number; source: PromptSource }): Promise<string | null> {
@@ -698,7 +763,8 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
     }
     debug(`gemma response complete chars=${text.length}`);
     emitDebugEvent("gemma response", { turnId, source: "typed", chars: text.length });
-    finishAssistantTurn(text, "gemma", turnId);
+    const recovered = await tryExecuteTextualToolResponse(text, { turnId, source: "typed", prompt });
+    finishAssistantTurn(recovered ?? text, recovered ? "local-tool-recovered" : "gemma", turnId);
   } catch (error) {
     if (isStaleTurn(turnId)) {
       debug(`gemma error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
