@@ -151,11 +151,21 @@ button {
   text-shadow: 0 0 20px rgba(110, 212, 240, 0.25);
 }
 
+.brand-mark span:last-child {
+  background: linear-gradient(90deg, var(--pop-cyan), var(--pop-pink));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
 .brand-mark .eyebrow-dot {
   box-shadow: 0 0 10px currentColor;
 }
 
 .ai-core {
+  --orb-size: min(46vh, 380px);
+  --ring-backdrop: min(54vh, 440px);
+  --orbit-radius: min(30vh, 240px);
   position: relative;
   display: grid;
   place-items: center;
@@ -165,16 +175,15 @@ button {
 
 .ai-core::before {
   position: absolute;
-  width: min(48vh, 400px);
+  width: var(--ring-backdrop);
   aspect-ratio: 1;
-  border: 1px solid rgba(110, 212, 240, 0.2);
+  border: none;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(34, 38, 52, 0.82) 0%, rgba(20, 22, 32, 0.45) 58%, transparent 74%);
   box-shadow:
-    0 0 0 1px rgba(232, 160, 216, 0.06),
     0 12px 48px rgba(0, 0, 0, 0.35),
-    0 0 64px rgba(110, 212, 240, 0.14),
-    0 0 96px rgba(232, 160, 216, 0.08);
+    0 0 64px rgba(110, 212, 240, 0.12),
+    0 0 96px rgba(232, 160, 216, 0.07);
   pointer-events: none;
   content: "";
 }
@@ -194,21 +203,20 @@ button {
 }
 
 .neural-ring.ring-1 {
-  width: min(52vh, 400px);
+  width: var(--ring-backdrop);
   aspect-ratio: 1;
-  border: 1.5px solid rgba(110, 212, 240, 0.32);
-  box-shadow:
-    0 0 24px rgba(110, 212, 240, 0.12),
-    inset 0 0 32px rgba(110, 212, 240, 0.04);
-  animation: neural-spin 80s linear infinite;
-}
-
-.neural-ring.ring-2 {
-  width: min(64vh, 490px);
-  aspect-ratio: 1;
-  border: 1.5px dashed rgba(232, 160, 216, 0.28);
-  box-shadow: 0 0 28px rgba(232, 160, 216, 0.1);
-  animation: neural-spin 110s linear infinite reverse;
+  border: none;
+  background: conic-gradient(
+    from 0deg,
+    rgba(110, 212, 240, 0.55),
+    rgba(232, 160, 216, 0.45),
+    rgba(180, 154, 255, 0.42),
+    rgba(110, 212, 240, 0.55)
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  box-shadow: 0 0 28px rgba(110, 212, 240, 0.14);
+  animation: neural-spin 90s linear infinite;
 }
 
 @keyframes neural-spin {
@@ -261,6 +269,11 @@ button {
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
+}
+
+.remote-link-hint {
+  color: var(--pop-purple);
+  text-shadow: 0 0 14px rgba(180, 154, 255, 0.35);
 }
 
 .topbar {
@@ -436,8 +449,9 @@ h3 {
 
 .orb {
   position: relative;
+  z-index: 5;
   display: grid;
-  width: min(46vh, 380px);
+  width: var(--orb-size);
   aspect-ratio: 1;
   place-items: center;
   cursor: pointer;
@@ -450,13 +464,13 @@ h3 {
 
 .orb-glow {
   position: absolute;
-  width: min(54vh, 480px);
+  width: var(--ring-backdrop);
   aspect-ratio: 1;
   border-radius: 50%;
   background:
-    radial-gradient(circle, rgba(110, 212, 240, calc(0.12 + var(--level) * 0.32)), transparent 58%),
-    radial-gradient(circle, rgba(232, 160, 216, calc(0.1 + var(--level) * 0.26)), transparent 72%),
-    radial-gradient(circle, rgba(180, 154, 255, 0.08), transparent 80%);
+    radial-gradient(circle, rgba(110, 212, 240, calc(0.14 + var(--level) * 0.32)), transparent 58%),
+    radial-gradient(circle, rgba(232, 160, 216, calc(0.12 + var(--level) * 0.26)), transparent 72%),
+    radial-gradient(circle, rgba(180, 154, 255, 0.1), transparent 80%);
   filter: blur(22px);
   transform: scale(calc(0.94 + var(--level) * 0.16));
   transition: transform 120ms ease, background 160ms ease;
@@ -464,16 +478,15 @@ h3 {
 
 .node-orbits,
 .neural-nodes {
-  --orbit-radius: min(27vh, 250px);
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 3;
   pointer-events: none;
 }
 
 .node-orbit {
   --thread-color: 120, 148, 255;
-  --thread-start: min(12vh, 100px);
+  --thread-start: calc(var(--orb-size) * 0.52);
   --thread-length: max(54px, calc(var(--orbit-radius) - var(--thread-start)));
   position: absolute;
   top: 50%;
@@ -618,6 +631,13 @@ h3 {
 }
 
 .node-orbit.listening { --thread-color: 104, 228, 191; }
+.node-orbit.idle { --thread-color: 110, 212, 240; }
+.node-orbit.idle .node-orb {
+  box-shadow:
+    inset 0 -12px 22px rgba(0, 0, 0, 0.34),
+    0 0 20px rgba(110, 212, 240, 0.22);
+}
+.node-orbit.idle .node-status-dot { background: #6ed4f0; }
 .node-orbit.listening .node-orb {
   background:
     radial-gradient(circle at 34% 26%, rgba(255, 255, 255, 0.92), transparent 16%),
@@ -680,15 +700,15 @@ h3 {
   z-index: 2;
   width: 50%;
   aspect-ratio: 1;
-  border: 1px solid rgba(110, 212, 240, 0.28);
+  border: 1px solid rgba(110, 212, 240, 0.32);
   border-radius: 50%;
   background:
     radial-gradient(circle at 36% 28%, rgba(255, 255, 255, 0.94), transparent 11%),
-    linear-gradient(155deg, #323848 0%, #262a36 40%, #2e3342 72%, #2a2f3e 100%);
+    linear-gradient(155deg, #343a4a 0%, #272c3a 42%, #2e3344 72%, #2a3040 100%);
   box-shadow:
     inset 0 -20px 48px rgba(0, 0, 0, 0.38),
     inset 0 2px 18px rgba(255, 255, 255, 0.06),
-    0 0 0 1px rgba(232, 160, 216, 0.12),
+    0 0 0 1px rgba(232, 160, 216, 0.16),
     var(--glow-vapor);
   transform: scale(calc(1 + var(--level) * 0.08));
   transition: transform 120ms ease, background 300ms ease, box-shadow 300ms ease;
@@ -697,11 +717,14 @@ h3 {
 .pulse-ring {
   position: absolute;
   z-index: 1;
-  width: 78%;
   aspect-ratio: 1;
-  border: 1.5px solid rgba(232, 160, 216, 0.22);
   border-radius: 50%;
-  box-shadow: 0 0 20px rgba(232, 160, 216, 0.08);
+}
+
+.pulse-ring.one {
+  width: 78%;
+  border: 1.5px solid rgba(232, 160, 216, 0.28);
+  box-shadow: 0 0 22px rgba(110, 212, 240, 0.12), 0 0 18px rgba(232, 160, 216, 0.1);
 }
 
 .orb-wrap.loading .pulse-ring,
@@ -717,7 +740,10 @@ h3 {
 }
 
 .orb-wrap.idle .orb-core {
-  border-color: rgba(110, 212, 240, 0.24);
+  border-color: rgba(110, 212, 240, 0.3);
+  background:
+    radial-gradient(circle at 36% 28%, rgba(255, 255, 255, 0.94), transparent 11%),
+    linear-gradient(155deg, #353b4c 0%, #283040 45%, #2f3548 100%);
 }
 
 .orb-wrap.wakeword .orb-core {
