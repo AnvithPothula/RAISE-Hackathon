@@ -428,11 +428,7 @@ export function App() {
             <div className="settings-grid">
               <Setting label="Assistant state" value={state} />
               <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-              <SettingInput
-                label="Gemini model"
-                value={settingsDraft?.gemini.model ?? ""}
-                onChange={(value) => updateDraft(setSettingsDraft, ["gemini", "model"], value)}
-              />
+              <Setting label="Gemini model" value={settingsDraft?.gemini.model ?? "gemma-4-26b-a4b-it"} />
               <SettingInput
                 label="Gemini API endpoint"
                 value={settingsDraft?.gemini.baseUrl ?? ""}
