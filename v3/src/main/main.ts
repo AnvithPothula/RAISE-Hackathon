@@ -281,7 +281,7 @@ pi.on("event", (event) => {
     const text = sanitizeAssistantText(extractAssistantText(payload));
     if (text) {
       pythonWorker.send({ type: "speak", text });
-    } else {
+    } else if (!activePrompt) {
       broadcast("assistant:state", "idle");
     }
   }
@@ -357,8 +357,8 @@ async function handleUserPrompt(rawPrompt: string): Promise<void> {
   }
   const turnId = activeTurnId + 1;
   activeTurnId = turnId;
-  pythonWorker.send({ type: "stop_speaking" });
   broadcast("assistant:state", "thinking");
+  pythonWorker.send({ type: "stop_speaking" });
   activePrompt = prompt;
   rememberTurn("user", prompt);
   emitDebugEvent("turn received", { turnId, source: "typed", prompt });
@@ -412,9 +412,9 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
   const turnId = activeTurnId + 1;
   let toolUsed = false;
   activeTurnId = turnId;
+  broadcast("assistant:state", "thinking");
   pythonWorker.send({ type: "stop_speaking" });
   echoBridge.setLed("active-thinking");
-  broadcast("assistant:state", "thinking");
   activePrompt = prompt;
   rememberTurn("user", prompt);
   emitDebugEvent("turn received", {
@@ -889,6 +889,9 @@ function broadcastLocalToolEvent(
       timestamp: new Date().toISOString()
     }
   });
+  if (phase === "end" && activePrompt) {
+    broadcast("assistant:state", "thinking");
+  }
 }
 
 function isRetryableToolName(name: string): name is LocalToolName {
