@@ -25,6 +25,16 @@
     "model": "gemma4:e2b",
     "think": "low"
   },
+  "gradium": {
+    "baseWsUrl": "wss://api.gradium.ai/api",
+    "ttsVoiceId": "YTpq7expH9539ERJ",
+    "ttsModel": "default",
+    "ttsOutputFormat": "pcm",
+    "sttModel": "default",
+    "sttInputFormat": "pcm_16000",
+    "vadHorizonIndex": 2,
+    "vadInactivityThreshold": 0.5
+  },
   "pi": {
     "command": "pi",
     "args": [

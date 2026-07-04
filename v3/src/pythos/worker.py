@@ -10,7 +10,7 @@ from .config import load_config, validate_model_paths
 from .debug_log import debug
 from .protocol import JsonlWriter, parse_command
 from .speech_to_text import SpeechListener
-from .text_to_speech import PiperSpeaker
+from .text_to_speech import GradiumSpeaker
 
 
 def main() -> int:
@@ -26,8 +26,15 @@ def main() -> int:
         if missing:
             debug(f"missing model paths count={len(missing)}")
             events.emit("error", source="config", message="Missing model paths", missing=missing)
+        if not config.gradium.is_configured:
+            debug("GRADIUM_API_KEY missing; speech-to-text and text-to-speech will be unavailable")
+            events.emit(
+                "error",
+                source="config",
+                message="GRADIUM_API_KEY is not set. Export it before launching (see API_KEYS_SETUP.txt).",
+            )
         listener = SpeechListener(config, events)
-        speaker = PiperSpeaker(config, events)
+        speaker = GradiumSpeaker(config, events)
         events.emit("state", value="loading", lowResourceMode=config.low_resource_mode)
         debug("state loading emitted; warming audio models")
         listener.preload_blocking()

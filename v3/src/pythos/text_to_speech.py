@@ -1,32 +1,55 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import contextlib
+import json
 import os
 import re
-import subprocess
+import sys
 import tempfile
 import threading
-import contextlib
-import sys
+import wave
 from pathlib import Path
 
-from .config import WorkerConfig
+from .config import GradiumConfig, WorkerConfig
 from .protocol import JsonlWriter
 
+# Sample rate (Hz) for each Gradium raw-PCM output format. "pcm" is 48 kHz.
+_PCM_SAMPLE_RATES = {
+    "pcm": 48000,
+    "pcm_48000": 48000,
+    "pcm_24000": 24000,
+    "pcm_16000": 16000,
+    "pcm_8000": 8000,
+}
 
-class PiperSpeaker:
+
+class GradiumSpeaker:
+    """Text-to-speech backed by the Gradium streaming TTS WebSocket API.
+
+    Synthesises each spoken chunk into raw PCM over ``wss://.../speech/tts``,
+    wraps it in a WAV container, and plays it locally with pygame. The public
+    surface, threading model, and emitted events match the previous local
+    (Piper) speaker so the worker and renderer need no changes.
+    """
+
     def __init__(self, config: WorkerConfig, events: JsonlWriter) -> None:
         self._config = config
+        self._gradium = config.gradium
         self._events = events
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def speak_async(self, text: str, length_scale: float | None = None) -> None:
+        # length_scale is accepted for wire compatibility with the worker/renderer
+        # but is a Piper concept; Gradium speed is controlled via voice settings.
         self.stop()
         self._stop.clear()
         safe_text = sanitize_spoken_text(text)
         self._thread = threading.Thread(
             target=self._speak,
-            args=(safe_text, length_scale or self._config.audio.tts_length_scale),
+            args=(safe_text,),
             daemon=True,
         )
         self._thread.start()
@@ -34,54 +57,36 @@ class PiperSpeaker:
     def stop(self) -> None:
         self._stop.set()
 
-    def _speak(self, text: str, length_scale: float) -> None:
+    def _speak(self, text: str) -> None:
         try:
+            if not self._gradium.is_configured:
+                self._events.emit(
+                    "error",
+                    source="tts",
+                    message="GRADIUM_API_KEY is not set; cannot synthesize speech.",
+                )
+                self._events.emit("tts_done", cancelled=True)
+                return
             self._events.emit("tts_started", text=text)
             for chunk in split_spoken_chunks(text):
                 if self._stop.is_set():
                     self._events.emit("tts_done", cancelled=True)
                     return
-                self._synthesize_and_play(chunk, length_scale)
+                self._synthesize_and_play(chunk)
             self._events.emit("tts_done", cancelled=self._stop.is_set())
         except Exception as exc:
             self._events.emit("error", source="tts", message=str(exc))
 
-    def _synthesize_and_play(self, text: str, length_scale: float) -> None:
+    def _synthesize_and_play(self, text: str) -> None:
         wav_path: Path | None = None
         try:
+            pcm = asyncio.run(self._synthesize(text))
+            if self._stop.is_set() or not pcm:
+                return
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 wav_path = Path(tmp.name)
-
-            command = [
-                str(self._config.models.piper_executable),
-                "-m",
-                str(self._config.models.piper_model),
-                "-c",
-                str(self._config.models.piper_config),
-                "-f",
-                str(wav_path),
-                "--length_scale",
-                str(length_scale),
-            ]
-            self._events.emit("tts_command", command=command)
-            process = subprocess.run(
-                command,
-                input=text.encode("utf-8"),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            if process.returncode != 0:
-                self._events.emit(
-                    "error",
-                    source="tts",
-                    message=process.stderr.decode("utf-8", errors="replace"),
-                )
-                return
-
-            if self._stop.is_set():
-                return
-
+            self._write_wav(wav_path, pcm)
             self._play_wav(wav_path)
         finally:
             if wav_path is not None:
@@ -89,6 +94,55 @@ class PiperSpeaker:
                     os.remove(wav_path)
                 except OSError:
                     pass
+
+    async def _synthesize(self, text: str) -> bytes:
+        import websockets
+
+        cfg: GradiumConfig = self._gradium
+        output_format = cfg.tts_output_format if cfg.tts_output_format in _PCM_SAMPLE_RATES else "pcm"
+        setup = {
+            "type": "setup",
+            "voice_id": cfg.tts_voice_id,
+            "model_name": cfg.tts_model,
+            "output_format": output_format,
+        }
+        chunks: list[bytes] = []
+        url = f"{cfg.base_ws_url}/speech/tts"
+        self._events.emit(
+            "tts_command",
+            command=["gradium", url, cfg.tts_voice_id, output_format],
+        )
+
+        async with websockets.connect(url, additional_headers={"x-api-key": cfg.api_key}) as ws:
+            await ws.send(json.dumps(setup))
+            ready = json.loads(await ws.recv())
+            if ready.get("type") != "ready":
+                raise RuntimeError(f"Unexpected TTS handshake response: {ready}")
+
+            await ws.send(json.dumps({"type": "text", "text": text}))
+            await ws.send(json.dumps({"type": "end_of_stream"}))
+
+            while True:
+                if self._stop.is_set():
+                    break
+                msg = json.loads(await ws.recv())
+                kind = msg.get("type")
+                if kind == "audio":
+                    chunks.append(base64.b64decode(msg["audio"]))
+                elif kind == "end_of_stream":
+                    break
+                elif kind == "error":
+                    raise RuntimeError(msg.get("message", "Gradium TTS error"))
+
+        return b"".join(chunks)
+
+    def _write_wav(self, wav_path: Path, pcm: bytes) -> None:
+        sample_rate = _PCM_SAMPLE_RATES.get(self._gradium.tts_output_format, 48000)
+        with wave.open(str(wav_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)  # 16-bit signed
+            handle.setframerate(sample_rate)
+            handle.writeframes(pcm)
 
     def _play_wav(self, wav_path: Path) -> None:
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")

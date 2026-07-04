@@ -1,0 +1,83 @@
+======================================================================
+ Pythos v3 - API Key / Environment Setup
+======================================================================
+
+This is a PUBLIC repo, so NO API keys are committed here. Each user
+supplies their own keys via environment variables. The Python worker
+inherits the environment of whatever shell launches the app, so the
+keys below must be exported in that shell BEFORE you start Pythos.
+
+Required for speech features:
+  GRADIUM_API_KEY   -> Text-to-Speech + Speech-to-Text (get it at
+                       https://studio.gradium.ai)
+
+Optional (existing integrations):
+  PYTHOS_WEB_SEARCH_KEY  -> web search
+  SPOTIFY_CLIENT_ID      -> Spotify control
+  PYTHOS_OLLAMA_MODEL    -> override the local LLM model
+  PYTHOS_PI_COMMAND      -> override the `pi` executable
+
+
+----------------------------------------------------------------------
+ macOS / Linux (bash or zsh)
+----------------------------------------------------------------------
+
+# Current terminal session only (must re-run each new terminal):
+export GRADIUM_API_KEY="your_gradium_api_key_here"
+
+# Then launch from the SAME terminal:
+npm run dev        # (or however you normally start the app)
+
+# Make it permanent (add to ~/.zshrc or ~/.bashrc, then reopen the shell):
+echo 'export GRADIUM_API_KEY="your_gradium_api_key_here"' >> ~/.zshrc
+source ~/.zshrc
+
+
+----------------------------------------------------------------------
+ Windows - PowerShell
+----------------------------------------------------------------------
+
+# Current session only:
+$env:GRADIUM_API_KEY = "your_gradium_api_key_here"
+
+# Then launch from the SAME PowerShell window:
+npm run dev
+
+# Make it permanent for your user account (reopen PowerShell afterwards):
+setx GRADIUM_API_KEY "your_gradium_api_key_here"
+
+
+----------------------------------------------------------------------
+ Windows - Command Prompt (cmd.exe)
+----------------------------------------------------------------------
+
+# Current session only:
+set GRADIUM_API_KEY=your_gradium_api_key_here
+
+# Permanent for your user account (reopen cmd afterwards):
+setx GRADIUM_API_KEY "your_gradium_api_key_here"
+
+
+----------------------------------------------------------------------
+ Optional: use a local .env file (gitignored)
+----------------------------------------------------------------------
+
+You can keep keys in v3/.env (copied from v3/.env.example). This file
+is gitignored so it will NOT be committed. NOTE: the app does not load
+.env automatically, so still export the vars in your shell, e.g.:
+
+  # macOS / Linux - load every KEY=VALUE line from .env into the shell:
+  set -a; source ./.env; set +a
+  npm run dev
+
+
+----------------------------------------------------------------------
+ Verify the key is visible to the app
+----------------------------------------------------------------------
+
+  macOS / Linux:   echo $GRADIUM_API_KEY
+  PowerShell:      echo $env:GRADIUM_API_KEY
+  cmd.exe:         echo %GRADIUM_API_KEY%
+
+If it prints your key, launch the app from that same shell. If speech
+fails, Pythos emits a clear "GRADIUM_API_KEY is not set" error event.

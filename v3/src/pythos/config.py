@@ -35,12 +35,30 @@ class OllamaConfig:
 
 
 @dataclass(frozen=True)
+class GradiumConfig:
+    api_key: str
+    base_ws_url: str
+    tts_voice_id: str
+    tts_model: str
+    tts_output_format: str
+    stt_model: str
+    stt_input_format: str
+    vad_horizon_index: int
+    vad_inactivity_threshold: float
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass(frozen=True)
 class WorkerConfig:
     root: Path
     low_resource_mode: bool
     models: ModelPaths
     audio: AudioConfig
     ollama: OllamaConfig
+    gradium: GradiumConfig
 
 
 def _resolve_path(root: Path, value: str) -> Path:
@@ -73,8 +91,13 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
     model_data = data.get("models", {})
     audio_data = data.get("audio", {})
     ollama_data = data.get("ollama", {})
+    gradium_data = data.get("gradium", {})
 
     model_name = os.environ.get("PYTHOS_OLLAMA_MODEL") or ollama_data.get("model", "llama3:8b")
+
+    # API key never lives in config.json (public repo); read it from the environment.
+    # A config.json "apiKey" is honoured only as a local fallback for convenience.
+    gradium_api_key = os.environ.get("GRADIUM_API_KEY") or str(gradium_data.get("apiKey", ""))
 
     return WorkerConfig(
         root=root,
@@ -100,18 +123,28 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
             base_url=str(ollama_data.get("baseUrl", "http://localhost:11434")).rstrip("/"),
             model=str(model_name),
         ),
+        gradium=GradiumConfig(
+            api_key=gradium_api_key,
+            base_ws_url=str(gradium_data.get("baseWsUrl", "wss://api.gradium.ai/api")).rstrip("/"),
+            tts_voice_id=str(gradium_data.get("ttsVoiceId", "YTpq7expH9539ERJ")),
+            tts_model=str(gradium_data.get("ttsModel", "default")),
+            tts_output_format=str(gradium_data.get("ttsOutputFormat", "pcm")),
+            stt_model=str(gradium_data.get("sttModel", "default")),
+            stt_input_format=str(gradium_data.get("sttInputFormat", "pcm_16000")),
+            vad_horizon_index=int(gradium_data.get("vadHorizonIndex", 2)),
+            vad_inactivity_threshold=float(gradium_data.get("vadInactivityThreshold", 0.5)),
+        ),
     )
 
 
 def validate_model_paths(config: WorkerConfig) -> list[str]:
+    """Validate on-device model assets that are still required.
+
+    STT (Vosk) and TTS (Piper) now run through the Gradium cloud API, so only the
+    local wake-word model is required. Piper/Vosk paths remain in the config for
+    backward compatibility but are no longer validated here.
+    """
     missing: list[str] = []
-    for label, path in (
-        ("wake word model", config.models.wake_word),
-        ("Vosk model", config.models.vosk),
-        ("Piper executable", config.models.piper_executable),
-        ("Piper model", config.models.piper_model),
-        ("Piper config", config.models.piper_config),
-    ):
-        if not path.exists():
-            missing.append(f"{label}: {path}")
+    if not config.models.wake_word.exists():
+        missing.append(f"wake word model: {config.models.wake_word}")
     return missing
