@@ -287,7 +287,9 @@ export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | nu
     return spotifyInvocation;
   }
 
-  const match = cleanPrompt.match(/^(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(.+)$/i);
+  const match = cleanPrompt.match(
+    /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
+  );
   if (!match) {
     return null;
   }
@@ -946,7 +948,8 @@ function normalizeWebsiteUrl(value: string): string {
 
 function stripOpenIntentWords(value: string): string {
   return value
-    .replace(/^(open|launch|start|go to|visit|browse to)\s+/i, "")
+    .replace(/^(open|launch|start|go to|visit|browse to|pull up|bring up|fire up)\s+/i, "")
+    .replace(/^(up|the|my|a|an)\s+/i, "")
     .replace(/\s+(for me|please|thanks|thank you)$/i, "")
     .replace(/\s+(website|site|webpage|app|application|program)$/i, "")
     .trim();

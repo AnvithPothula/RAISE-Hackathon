@@ -358,6 +358,13 @@ describe("resolveDirectLocalTool", () => {
     expect(resolveDirectLocalTool("open excel please")).toEqual({ name: "open_app", args: { app: "excel" } });
   });
 
+  it("handles filler words like 'open up X' and 'launch my X'", () => {
+    expect(resolveDirectLocalTool("open up chrome")).toEqual({ name: "open_app", args: { app: "chrome" } });
+    expect(resolveDirectLocalTool("Open up Chrome.")).toEqual({ name: "open_app", args: { app: "Chrome" } });
+    expect(resolveDirectLocalTool("launch my calculator")).toEqual({ name: "open_app", args: { app: "calculator" } });
+    expect(resolveDirectLocalTool("pull up spotify")).toEqual({ name: "open_app", args: { app: "spotify" } });
+  });
+
   it("routes explicit website launch commands without model help", () => {
     expect(resolveDirectLocalTool("open youtube")).toEqual({ name: "open_website", args: { url: "youtube" } });
     expect(resolveDirectLocalTool("open example.com")).toEqual({ name: "open_website", args: { url: "example.com" } });

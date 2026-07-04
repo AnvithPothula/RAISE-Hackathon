@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../shared/types.js";
-import { isOllamaReady, resolveActiveModel } from "./ollamaClient.js";
+import { isOllamaReady, resolveActiveModel, warmUpModel } from "./ollamaClient.js";
 
 const STARTUP_WAIT_MS = 45000;
 const POLL_MS = 500;
@@ -33,6 +33,8 @@ export type OllamaEnsureResult = {
 export async function ensureOllamaReady(config: AppConfig): Promise<OllamaEnsureResult> {
   const model = resolveActiveModel(config);
   if (await isOllamaReady(config)) {
+    // Preload weights in the background so the first prompt isn't a cold start.
+    void warmUpModel(config);
     return { ready: true, model, message: `Local Gemma ready (${model}).` };
   }
 
@@ -49,6 +51,7 @@ export async function ensureOllamaReady(config: AppConfig): Promise<OllamaEnsure
   const deadline = Date.now() + STARTUP_WAIT_MS;
   while (Date.now() < deadline) {
     if (await isOllamaReady(config)) {
+      void warmUpModel(config);
       return { ready: true, model, message: `Started Ollama and loaded ${model}.` };
     }
     await sleep(POLL_MS);

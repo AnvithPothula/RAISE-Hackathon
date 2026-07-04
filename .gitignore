@@ -11,6 +11,9 @@ build/
 out/
 .vite/
 
+# graphify is intentionally not used in this project
+graphify-out/
+
 .venv/
 venv/
 env/
