@@ -9,6 +9,9 @@ import path from "node:path";
 import { Duplex } from "node:stream";
 import { URL } from "node:url";
 import { appRoot, resolveWorkerPython, workerPythonEnv } from "./config.js";
+import { createLogger } from "./logger.js";
+
+const debugEcho = createLogger("echoBridge");
 
 type EchoPromptContext = {
   deviceId: string;
@@ -829,7 +832,15 @@ export class EchoBridge extends EventEmitter {
       "transcribe",
       "--input",
       inputPath
-    ]).then((value) => String(value.text ?? "").trim());
+    ]).then((value) => {
+      // The helper reports which engine served the request (gradium/vosk) so
+      // the offline fallback is observable in the activity log.
+      const engine = String(value.engine ?? "").trim();
+      if (engine) {
+        debugEcho(`echo transcribe engine=${engine}`);
+      }
+      return String(value.text ?? "").trim();
+    });
   }
 
   private synthesize(text: string, outputPath: string): Promise<void> {
@@ -843,7 +854,12 @@ export class EchoBridge extends EventEmitter {
       text,
       "--output",
       outputPath
-    ]).then(() => undefined);
+    ]).then((value) => {
+      const engine = String(value.engine ?? "").trim();
+      if (engine) {
+        debugEcho(`echo synthesize engine=${engine}`);
+      }
+    });
   }
 
   private json(response: ServerResponse, status: number, payload: Record<string, unknown>): void {

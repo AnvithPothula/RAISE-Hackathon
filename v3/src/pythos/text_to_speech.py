@@ -1,3 +1,17 @@
+"""Hybrid text-to-speech: streaming Gradium cloud TTS with a local fallback.
+
+Per spoken chunk, the engine is chosen behind the network-state detector:
+Gradium's studio voice when an API key is set and the network is up, the
+local chain (Piper when installed, OS system voice otherwise) when it is
+not. A Gradium synthesis that dies mid-utterance falls back to the local
+engine for that chunk instead of going silent — the demo's audible
+"cloud voice degrades to local voice" moment.
+
+The public surface, threading model, and emitted events match the previous
+speaker, so the worker protocol and renderer need no changes beyond the new
+optional ``engine`` field on ``tts_started``.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +29,10 @@ from pathlib import Path
 from typing import Callable
 
 from .config import GradiumConfig, WorkerConfig
+from .debug_log import debug
+from .network_monitor import is_network_error
 from .protocol import JsonlWriter
+from .voice_mode import VoiceModeReporter
 
 # Sample rate (Hz) for each Gradium raw-PCM output format. "pcm" is 48 kHz.
 _PCM_SAMPLE_RATES = {
@@ -86,31 +103,31 @@ async def gradium_tts_pcm(
     return b"".join(chunks)
 
 
-class GradiumSpeaker:
-    """Text-to-speech backed by the Gradium streaming TTS WebSocket API.
+class HybridSpeaker:
+    """Text-to-speech with per-chunk cloud/local engine selection.
 
-    Synthesises each spoken chunk into raw PCM over ``wss://.../speech/tts``,
-    wraps it in a WAV container, and plays it locally with pygame. The public
-    surface, threading model, and emitted events match the previous local
-    (Piper) speaker so the worker and renderer need no changes.
+    Synthesizes each spoken chunk into a WAV file (Gradium PCM or the local
+    Piper/system chain) and plays it with pygame. Engine choice and network
+    fallback are delegated to the shared :class:`VoiceModeReporter` so the
+    speaker and the listener always agree on the active voice mode.
     """
 
-    def __init__(self, config: WorkerConfig, events: JsonlWriter) -> None:
+    def __init__(self, config: WorkerConfig, events: JsonlWriter, reporter: VoiceModeReporter) -> None:
         self._config = config
         self._gradium = config.gradium
         self._events = events
+        self._reporter = reporter
+        self._local = reporter.local_tts
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def speak_async(self, text: str, length_scale: float | None = None) -> None:
-        # length_scale is accepted for wire compatibility with the worker/renderer
-        # but is a Piper concept; Gradium speed is controlled via voice settings.
         self.stop()
         self._stop.clear()
         safe_text = sanitize_spoken_text(text)
         self._thread = threading.Thread(
             target=self._speak,
-            args=(safe_text,),
+            args=(safe_text, length_scale or self._config.audio.tts_length_scale),
             daemon=True,
         )
         self._thread.start()
@@ -118,37 +135,53 @@ class GradiumSpeaker:
     def stop(self) -> None:
         self._stop.set()
 
-    def _speak(self, text: str) -> None:
+    def _speak(self, text: str, length_scale: float) -> None:
         try:
-            if not self._gradium.is_configured:
-                self._events.emit(
-                    "error",
-                    source="tts",
-                    message="GRADIUM_API_KEY is not set; cannot synthesize speech.",
-                )
-                self._events.emit("tts_done", cancelled=True)
-                return
-            self._events.emit("tts_started", text=text)
+            engine = self._reporter.refresh("speaking turn")
+            self._events.emit("tts_started", text=text, engine=engine)
             for chunk in split_spoken_chunks(text):
                 if self._stop.is_set():
                     self._events.emit("tts_done", cancelled=True)
                     return
-                self._synthesize_and_play(chunk)
+                engine = self._synthesize_and_play(chunk, engine, length_scale)
             self._events.emit("tts_done", cancelled=self._stop.is_set())
         except Exception as exc:
             self._events.emit("error", source="tts", message=str(exc))
 
-    def _synthesize_and_play(self, text: str) -> None:
+    def _synthesize_and_play(self, text: str, engine: str, length_scale: float) -> str:
+        """Synthesize and play one chunk; returns the engine to use next.
+
+        A Gradium failure caused by the network swaps this and subsequent
+        chunks to the local engine mid-utterance. Non-network failures
+        propagate so real problems stay visible.
+        """
         wav_path: Path | None = None
         try:
-            pcm = asyncio.run(self._synthesize(text))
-            if self._stop.is_set() or not pcm:
-                return
-
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 wav_path = Path(tmp.name)
-            self._write_wav(wav_path, pcm)
+
+            if engine == "gradium":
+                try:
+                    pcm = asyncio.run(self._synthesize_gradium(text))
+                    if self._stop.is_set():
+                        return engine
+                    if pcm:
+                        write_wav_pcm(wav_path, pcm, pcm_sample_rate(self._gradium))
+                        self._play_wav(wav_path)
+                    return engine
+                except Exception as exc:
+                    if not is_network_error(exc) or self._local.engine is None:
+                        raise
+                    debug(f"gradium tts failed mid-utterance; swapping to local voice: {exc}")
+                    self._reporter.note_network_failure("speech synthesis")
+                    engine = "local"
+
+            used = self._synthesize_local(text, wav_path, length_scale)
+            if self._stop.is_set():
+                return engine
             self._play_wav(wav_path)
+            debug(f"local tts chunk spoken engine={used}")
+            return engine
         finally:
             if wav_path is not None:
                 try:
@@ -156,7 +189,7 @@ class GradiumSpeaker:
                 except OSError:
                     pass
 
-    async def _synthesize(self, text: str) -> bytes:
+    async def _synthesize_gradium(self, text: str) -> bytes:
         cfg = self._gradium
         self._events.emit(
             "tts_command",
@@ -164,8 +197,10 @@ class GradiumSpeaker:
         )
         return await gradium_tts_pcm(cfg, text, should_stop=self._stop.is_set)
 
-    def _write_wav(self, wav_path: Path, pcm: bytes) -> None:
-        write_wav_pcm(wav_path, pcm, pcm_sample_rate(self._gradium))
+    def _synthesize_local(self, text: str, wav_path: Path, length_scale: float) -> str:
+        engine = self._local.synthesize_to_wav(text, wav_path, length_scale)
+        self._events.emit("tts_command", command=[engine, "local", str(wav_path)])
+        return engine
 
     def _play_wav(self, wav_path: Path) -> None:
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")

@@ -11,6 +11,7 @@ const api = {
   getPiCommands: () => ipcRenderer.invoke("pi:getCommands"),
   getPiStatus: () => ipcRenderer.invoke("pi:getStatus"),
   getMcpStatus: () => ipcRenderer.invoke("mcp:getStatus"),
+  getVoiceMode: () => ipcRenderer.invoke("voice:getMode"),
   promptAssistant: (message) => ipcRenderer.invoke("assistant:prompt", message),
   clearAssistantContext: () => ipcRenderer.invoke("assistant:clearContext"),
   getConfig: () => ipcRenderer.invoke("app:getConfig"),

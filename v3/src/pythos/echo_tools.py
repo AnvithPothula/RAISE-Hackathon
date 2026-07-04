@@ -1,3 +1,13 @@
+"""One-shot STT/TTS helpers for the Echo/Android bridge, with offline fallback.
+
+The Electron bridge shells out to this module to transcribe an uploaded WAV
+and to synthesize a spoken reply. Engine selection matches the desktop voice
+pipeline: Gradium cloud when an API key is set and the network is up, the
+local Vosk/Piper/system stack otherwise — so a remote node round-trip keeps
+working when the Wi-Fi (or just the cloud) is down. Results include the
+engine used so the bridge can surface it in the UI.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -7,7 +17,10 @@ import json
 import wave
 from pathlib import Path
 
-from .config import GradiumConfig, load_config
+from .config import GradiumConfig, WorkerConfig, load_config
+from .debug_log import debug
+from .local_voice import LocalSttSettings, LocalSynthesizer, VoskTranscriber
+from .network_monitor import NetworkMonitor, is_network_error
 from .text_to_speech import (
     gradium_tts_pcm,
     pcm_sample_rate,
@@ -32,34 +45,85 @@ def main() -> int:
     parser.add_argument("--config", default=None)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe a WAV file with Gradium")
+    transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe a WAV file (Gradium or local Vosk)")
     transcribe_parser.add_argument("--input", required=True)
 
-    synth_parser = subparsers.add_parser("synthesize", help="Create a WAV file with Gradium TTS")
+    synth_parser = subparsers.add_parser("synthesize", help="Create a WAV file (Gradium or local TTS)")
     synth_parser.add_argument("--text", required=True)
     synth_parser.add_argument("--output", required=True)
     synth_parser.add_argument("--length-scale", type=float, default=None)
 
     args = parser.parse_args()
     config = load_config(args.config)
-
-    if not config.gradium.is_configured:
-        raise RuntimeError("GRADIUM_API_KEY is not set. Export it before launching (see API_KEYS_SETUP.txt).")
+    network = NetworkMonitor.for_gradium(config.gradium.base_ws_url)
 
     if args.command == "transcribe":
-      text = transcribe_wav(Path(args.input), config.gradium)
-      print(json.dumps({"text": text}, ensure_ascii=True), flush=True)
-      return 0
+        text, engine = transcribe_wav(Path(args.input), config, network)
+        print(json.dumps({"text": text, "engine": engine}, ensure_ascii=True), flush=True)
+        return 0
 
     if args.command == "synthesize":
-      synthesize_wav(text=str(args.text), output=Path(args.output), cfg=config.gradium)
-      print(json.dumps({"output": str(Path(args.output).resolve())}, ensure_ascii=True), flush=True)
-      return 0
+        engine = synthesize_wav(
+            text=str(args.text),
+            output=Path(args.output),
+            config=config,
+            network=network,
+            length_scale=args.length_scale,
+        )
+        print(
+            json.dumps({"output": str(Path(args.output).resolve()), "engine": engine}, ensure_ascii=True),
+            flush=True,
+        )
+        return 0
 
     return 1
 
 
-def transcribe_wav(path: Path, cfg: GradiumConfig) -> str:
+def _use_gradium(config: WorkerConfig, network: NetworkMonitor) -> bool:
+    return config.gradium.is_configured and network.is_online()
+
+
+def _local_transcriber(config: WorkerConfig) -> VoskTranscriber:
+    return VoskTranscriber(
+        config.models.vosk,
+        LocalSttSettings(
+            chunk=config.audio.chunk,
+            rate=config.audio.rate,
+            asr_timeout_seconds=config.audio.asr_timeout_seconds,
+            silence_timeout_seconds=config.audio.silence_timeout_seconds,
+        ),
+    )
+
+
+def _local_synthesizer(config: WorkerConfig) -> LocalSynthesizer:
+    return LocalSynthesizer(
+        config.models.piper_executable,
+        config.models.piper_model,
+        config.models.piper_config,
+        default_length_scale=config.audio.tts_length_scale,
+    )
+
+
+def transcribe_wav(path: Path, config: WorkerConfig, network: NetworkMonitor) -> tuple[str, str]:
+    """Transcribe a WAV upload; returns (text, engine)."""
+    if _use_gradium(config, network):
+        try:
+            return transcribe_wav_gradium(path, config.gradium), "gradium"
+        except Exception as exc:
+            local = _local_transcriber(config)
+            if not is_network_error(exc) or not local.available:
+                raise
+            debug(f"echo transcribe: gradium failed, falling back to local vosk: {exc}")
+            network.invalidate()
+            return local.transcribe_wav_file(path), "vosk"
+
+    local = _local_transcriber(config)
+    if not local.available:
+        raise RuntimeError(local.install_hint())
+    return local.transcribe_wav_file(path), "vosk"
+
+
+def transcribe_wav_gradium(path: Path, cfg: GradiumConfig) -> str:
     with wave.open(str(path), "rb") as wav:
         if wav.getnchannels() != 1:
             raise ValueError("Expected mono WAV from Echo node")
@@ -116,10 +180,32 @@ async def _transcribe_async(cfg: GradiumConfig, audio: bytes, input_format: str)
     return " ".join(segments).strip()
 
 
-def synthesize_wav(*, text: str, output: Path, cfg: GradiumConfig) -> None:
+def synthesize_wav(
+    *,
+    text: str,
+    output: Path,
+    config: WorkerConfig,
+    network: NetworkMonitor,
+    length_scale: float | None = None,
+) -> str:
+    """Synthesize a reply WAV; returns the engine used."""
     output.parent.mkdir(parents=True, exist_ok=True)
-    pcm = asyncio.run(gradium_tts_pcm(cfg, sanitize_spoken_text(text)))
-    write_wav_pcm(output, pcm, pcm_sample_rate(cfg))
+    clean = sanitize_spoken_text(text)
+
+    if _use_gradium(config, network):
+        try:
+            pcm = asyncio.run(gradium_tts_pcm(config.gradium, clean))
+            write_wav_pcm(output, pcm, pcm_sample_rate(config.gradium))
+            return "gradium"
+        except Exception as exc:
+            local = _local_synthesizer(config)
+            if not is_network_error(exc) or local.engine is None:
+                raise
+            debug(f"echo synthesize: gradium failed, falling back to local tts: {exc}")
+            network.invalidate()
+            return local.synthesize_to_wav(clean, output, length_scale)
+
+    return _local_synthesizer(config).synthesize_to_wav(clean, output, length_scale)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,67 @@ button {
   padding: 18px 24px 0;
 }
 
+/* Demo HUD: on-device badge, live voice mode, and Ollama perf metrics. */
+.demo-hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px 0;
+}
+
+.hud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(8, 9, 12, 0.72);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: default;
+  transition: border-color var(--transition-base), color var(--transition-base);
+}
+
+.hud-badge .hud-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(111, 212, 176, 0.6);
+}
+
+.hud-badge.on-device {
+  color: var(--success);
+  border-color: rgba(111, 212, 176, 0.35);
+  background: rgba(111, 212, 176, 0.08);
+}
+
+.hud-badge.voice.cloud {
+  color: var(--pop-cyan);
+  border-color: rgba(110, 212, 240, 0.35);
+  background: rgba(110, 212, 240, 0.08);
+}
+
+.hud-badge.voice.local {
+  color: var(--pop-purple);
+  border-color: rgba(180, 154, 255, 0.35);
+  background: rgba(180, 154, 255, 0.08);
+}
+
+.hud-badge.voice.degraded {
+  color: var(--warning);
+  border-color: rgba(212, 168, 106, 0.4);
+  background: rgba(212, 168, 106, 0.08);
+}
+
+.hud-badge.perf {
+  font-variant-numeric: tabular-nums;
+}
+
 .brand-mark {
   display: inline-flex;
   align-items: center;

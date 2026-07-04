@@ -25,7 +25,9 @@
     "model": "gemma4:12b",
     "lowResourceModel": "gemma4:e2b",
     "think": "auto",
-    "thinkLevel": "low"
+    "thinkLevel": "low",
+    "engineVariant": "standard",
+    "_engineVariantComment": "Set to 'mlx' (Settings > Engine variant) on Apple Silicon to serve the MLX build (e.g. gemma4:12b-mlx) for higher tok/s. Pull it first: ollama pull gemma4:12b-mlx. Falls back to the standard build automatically when the MLX tag is not pulled or the host is not Apple Silicon."
   },
   "openrouter": {
     "enabled": false,

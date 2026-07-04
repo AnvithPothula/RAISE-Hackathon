@@ -1,4 +1,12 @@
-import type { AppConfig, McpStatus, ModelStats, PiEvent, PiStatus, WorkerEvent } from "../shared/types";
+import type {
+  AppConfig,
+  McpStatus,
+  ModelStats,
+  PiEvent,
+  PiStatus,
+  VoiceModePayload,
+  WorkerEvent
+} from "../shared/types";
 
 declare global {
   interface Window {
@@ -13,6 +21,7 @@ declare global {
       getPiCommands: () => Promise<void>;
       getPiStatus: () => Promise<PiStatus>;
       getMcpStatus: () => Promise<McpStatus>;
+      getVoiceMode: () => Promise<VoiceModePayload | null>;
       promptAssistant: (message: string) => Promise<boolean>;
       clearAssistantContext: () => Promise<boolean>;
       getConfig: () => Promise<AppConfig>;

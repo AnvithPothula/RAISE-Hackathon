@@ -34,7 +34,7 @@ import { EchoBridge, type EchoBridgeEvent, type EchoPromptReply } from "./echoBr
 import { UserMemoryStore } from "./userMemory.js";
 import { isRetryPrompt } from "./toolRetry.js";
 import { compactDebugDetails, createLogger, formatDebugFields, truncateDebugValue } from "./logger.js";
-import type { McpStatus, ModelStats, WorkerEvent } from "../shared/types.js";
+import type { McpStatus, ModelStats, VoiceModePayload, WorkerEvent } from "../shared/types.js";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const debug = createLogger("main");
 let config = readConfig();
@@ -55,6 +55,9 @@ let lastRetryableTool: { name: LocalToolName; args: LocalToolArgs; knownLocation
 const conversationHistory: Array<{ role: "user" | "assistant"; text: string }> = [];
 let wakewordArmed = false;
 let isQuitting = false;
+// Latest voice-pipeline mode from the Python worker. Cached so a renderer that
+// loads after the worker's startup announcement can still fetch it over IPC.
+let lastVoiceMode: VoiceModePayload | null = null;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -214,6 +217,16 @@ pythonWorker.on("event", (event: WorkerEvent) => {
   if (event.type !== "audio_level") {
     debug(`worker event ${JSON.stringify(event)}`);
   }
+  if (event.type === "voice_mode") {
+    lastVoiceMode = event.payload;
+    emitDebugEvent("voice mode", {
+      engine: event.payload.engine,
+      online: event.payload.online,
+      stt: event.payload.stt,
+      tts: event.payload.tts,
+      reason: event.payload.reason
+    });
+  }
   broadcast("worker:event", event);
   if (event.type === "final_transcript") {
     broadcast("assistant:state", "thinking");
@@ -326,6 +339,7 @@ ipcMain.handle("pi:abort", () => pi.abort());
 ipcMain.handle("pi:getCommands", () => pi.getCommands());
 ipcMain.handle("pi:getStatus", () => pi.getStatus());
 ipcMain.handle("mcp:getStatus", () => mcp.getStatus());
+ipcMain.handle("voice:getMode", () => lastVoiceMode);
 ipcMain.handle("assistant:prompt", (_event, prompt: string) => {
   const clean = String(prompt ?? "").trim();
   if (!clean) {

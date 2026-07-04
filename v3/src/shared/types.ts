@@ -8,14 +8,37 @@ export type AssistantState =
   | "error"
   | "shutdown";
 
+/** The voice engine currently serving STT/TTS turns. */
+export type VoiceEngine = "gradium" | "local";
+
+/**
+ * Live voice-pipeline mode reported by the Python worker whenever the
+ * network-state detector changes the effective engine. Drives the demo HUD
+ * ("Voice: Gradium (cloud)" / "Voice: Local (offline)").
+ */
+export type VoiceModePayload = {
+  engine: VoiceEngine;
+  /** Result of the last reachability probe. */
+  online: boolean;
+  /** Whether a Gradium API key is configured at all. */
+  gradiumConfigured: boolean;
+  /** Engine serving speech recognition: cloud, offline model, or none. */
+  stt: "gradium" | "vosk" | "unavailable";
+  /** Engine serving speech synthesis: cloud, Piper, OS voice, or none. */
+  tts: "gradium" | "piper" | "system" | "unavailable";
+  /** Human-readable cause of the last mode evaluation. */
+  reason?: string;
+};
+
 export type WorkerEvent =
   | { type: "state"; payload: { value: AssistantState; lowResourceMode?: boolean } }
   | { type: "audio_level"; payload: { value: number } }
   | { type: "partial_transcript"; payload: { text: string } }
   | { type: "final_transcript"; payload: { text: string } }
-  | { type: "tts_started"; payload: { text: string } }
+  | { type: "tts_started"; payload: { text: string; engine?: VoiceEngine } }
   | { type: "tts_done"; payload: { cancelled?: boolean } }
   | { type: "tts_command"; payload: { command: string[] } }
+  | { type: "voice_mode"; payload: VoiceModePayload }
   | { type: "error"; payload: { source: string; message: string; missing?: string[] } };
 
 export type PiEvent = {
@@ -44,6 +67,14 @@ export type ThinkMode = "auto" | "on" | "off";
 
 /** Explicit reasoning depth for supported Ollama models. */
 export type ThinkLevel = "none" | "low" | "medium" | "high";
+
+/**
+ * Which build of the local Gemma weights Ollama should serve.
+ * "mlx" requests the Apple-Silicon MLX variant (e.g. gemma4:12b-mlx) for
+ * higher token throughput; it silently falls back to the standard build on
+ * unsupported hosts or when the MLX tag is not pulled.
+ */
+export type EngineVariant = "standard" | "mlx";
 
 /** Per-request inference metrics reported by the local Ollama runtime. */
 export type ModelStats = {
@@ -109,6 +140,7 @@ export type AppConfig = {
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
+<<<<<<< Updated upstream
   ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode; thinkLevel?: ThinkLevel };
   openrouter?: {
     enabled?: boolean;
@@ -116,6 +148,15 @@ export type AppConfig = {
     baseUrl?: string;
     /** Stored in per-user settings only — never commit this to config.json. */
     apiKey?: string;
+=======
+  ollama: {
+    model: string;
+    baseUrl?: string;
+    lowResourceModel?: string;
+    think?: ThinkMode;
+    thinkLevel?: ThinkLevel;
+    engineVariant?: EngineVariant;
+>>>>>>> Stashed changes
   };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;

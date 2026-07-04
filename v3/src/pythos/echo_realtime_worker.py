@@ -16,8 +16,9 @@ import numpy as np
 
 from .config import WorkerConfig, load_config, validate_model_paths
 from .debug_log import debug
+from .local_voice import LocalSttSettings, VoskPushTranscriber, VoskTranscriber, contains_wake_word
+from .network_monitor import NetworkMonitor
 from .protocol import JsonlWriter, parse_command
-from .speech_to_text import _contains_wake_word
 
 
 class GradiumPushTranscriber:
@@ -202,29 +203,87 @@ class EchoRealtimeListener:
         missing = validate_model_paths(self.config)
         if missing:
             self.events.emit("error", source="config", message="Missing model paths", missing=missing)
-        # A single push transcriber drives both phases: it streams device audio to
-        # Gradium STT to spot the wake word, then a fresh session captures the
-        # command that follows.
-        self.transcriber = GradiumPushTranscriber(self.config)
+        # Engine selection mirrors the desktop voice pipeline: Gradium streaming
+        # STT when an API key is set and the network is up, the on-device Vosk
+        # recognizer otherwise. One push transcriber drives both phases: it
+        # spots the wake word in live transcripts, then a fresh session
+        # captures the command that follows.
+        self.network = NetworkMonitor.for_gradium(self.config.gradium.base_ws_url)
+        self._local_stt = VoskTranscriber(
+            self.config.models.vosk,
+            LocalSttSettings(
+                chunk=self.config.audio.chunk,
+                rate=self.config.audio.rate,
+                asr_timeout_seconds=self.config.audio.asr_timeout_seconds,
+                silence_timeout_seconds=self.config.audio.silence_timeout_seconds,
+            ),
+        )
+        self._gradium_transcriber: GradiumPushTranscriber | None = None
+        self._vosk_transcriber: VoskPushTranscriber | None = None
+        self.transcriber: Any = None
+        self.engine = "none"
         if not self.config.gradium.is_configured:
+            debug("echo realtime: GRADIUM_API_KEY missing; using local voice engines")
+        if not self._session_engine_available():
             self.events.emit(
                 "error",
                 source="config",
-                message="GRADIUM_API_KEY is not set. Export it before launching (see API_KEYS_SETUP.txt).",
+                message=(
+                    "No speech engine is available for the Echo bridge: set GRADIUM_API_KEY "
+                    f"for cloud voice or install the offline model. {self._local_stt.install_hint()}"
+                ),
             )
         else:
             self._open_wake_session()
         self.state = "wakeword"
-        self.events.emit("state", value=self.state)
+        self.events.emit("state", value=self.state, engine=self.engine)
+
+    def _session_engine_available(self) -> bool:
+        return self.config.gradium.is_configured or self._local_stt.available
+
+    def _select_transcriber(self) -> Any:
+        """Pick the transcriber for a fresh session (probing the network)."""
+        if self.config.gradium.is_configured and self.network.is_online():
+            if self._gradium_transcriber is None:
+                self._gradium_transcriber = GradiumPushTranscriber(self.config)
+            self.engine = "gradium"
+            return self._gradium_transcriber
+        if self._local_stt.available:
+            if self._vosk_transcriber is None:
+                self._vosk_transcriber = VoskPushTranscriber(self._local_stt)
+            self.engine = "vosk"
+            return self._vosk_transcriber
+        self.engine = "none"
+        return None
 
     def _open_wake_session(self) -> None:
-        """Open a fresh Gradium STT session for wake word detection."""
-        if not self.config.gradium.is_configured:
+        """Open a fresh STT session (cloud or local) for wake word detection."""
+        previous = self.transcriber
+        selected = self._select_transcriber()
+        if selected is None:
+            self.events.emit("error", source="wakeword", message=self._local_stt.install_hint())
             return
+        if previous is not None and previous is not selected:
+            with contextlib.suppress(Exception):
+                previous.close()
+        self.transcriber = selected
         try:
             self.transcriber.open()
+            debug(f"echo realtime session open engine={self.engine}")
         except Exception as exc:
-            debug(f"echo realtime failed to open wake session: {exc}")
+            debug(f"echo realtime failed to open wake session ({self.engine}): {exc}")
+            # A failed cloud session usually means the network just dropped:
+            # re-probe and retry once, which lands on the local engine.
+            self.network.invalidate()
+            retry = self._select_transcriber()
+            if retry is not None and retry is not self.transcriber:
+                self.transcriber = retry
+                try:
+                    self.transcriber.open()
+                    debug(f"echo realtime session reopened engine={self.engine}")
+                    return
+                except Exception as retry_exc:  # noqa: BLE001 - surfaced below
+                    exc = retry_exc
             self.events.emit("error", source="wakeword", message=str(exc))
 
     def reset_to_wakeword(self) -> None:
@@ -233,7 +292,7 @@ class EchoRealtimeListener:
         # Re-open the STT session so stale command audio never leaks into wake
         # detection (open() closes the previous session first).
         self._open_wake_session()
-        self.events.emit("state", value=self.state)
+        self.events.emit("state", value=self.state, engine=self.engine)
 
     def manual_wake(self) -> None:
         self._start_listening("manual")
@@ -251,19 +310,22 @@ class EchoRealtimeListener:
 
     def _accept_wakeword(self, audio: bytes) -> None:
         samples = np.frombuffer(audio, dtype=np.int16)
-        if samples.size == 0:
+        if samples.size == 0 or self.transcriber is None:
             return
         self.transcriber.send(audio)
         status = self.transcriber.poll()
 
         if status["error"]:
-            debug(f"echo realtime wake session error: {status['error']}")
+            debug(f"echo realtime wake session error ({self.engine}): {status['error']}")
+            # A dying cloud session usually means the network dropped: force a
+            # re-probe so the reopened session can land on the local engine.
+            self.network.invalidate()
             self._open_wake_session()
             return
 
         partial = str(status["partial"]).strip()
-        if partial and _contains_wake_word(partial, self.config.audio.wake_word):
-            self.events.emit("wake", word=self.config.audio.wake_word, score=1.0)
+        if partial and contains_wake_word(partial, self.config.audio.wake_word):
+            self.events.emit("wake", word=self.config.audio.wake_word, score=1.0, engine=self.engine)
             self._start_listening("wakeword")
             return
 
@@ -273,16 +335,21 @@ class EchoRealtimeListener:
             self._open_wake_session()
 
     def _start_listening(self, source: str) -> None:
-        if not self.config.gradium.is_configured:
+        if not self._session_engine_available():
             self.events.emit(
-                "error", source="asr", message="GRADIUM_API_KEY is not set; cannot transcribe speech."
+                "error",
+                source="asr",
+                message=(
+                    "No speech engine is available: set GRADIUM_API_KEY for cloud voice "
+                    f"or install the offline model. {self._local_stt.install_hint()}"
+                ),
             )
             self.reset_to_wakeword()
             return
         try:
-            self.transcriber.open()
+            self._open_command_session()
         except Exception as exc:
-            debug(f"echo realtime failed to open Gradium session: {exc}")
+            debug(f"echo realtime failed to open command session ({self.engine}): {exc}")
             self.events.emit("error", source="asr", message=str(exc))
             self.reset_to_wakeword()
             return
@@ -291,14 +358,40 @@ class EchoRealtimeListener:
         self.last_speech = now
         self.listen_started = now
         self.state = "listening"
-        self.events.emit("state", value=self.state, source=source)
+        self.events.emit("state", value=self.state, source=source, engine=self.engine)
+
+    def _open_command_session(self) -> None:
+        """Open a fresh session for the command that follows the wake word."""
+        previous = self.transcriber
+        selected = self._select_transcriber()
+        if selected is None:
+            raise RuntimeError(self._local_stt.install_hint())
+        if previous is not None and previous is not selected:
+            with contextlib.suppress(Exception):
+                previous.close()
+        self.transcriber = selected
+        try:
+            self.transcriber.open()
+        except Exception:
+            # Cloud session failed to open: re-probe once and retry, which
+            # lands on the local engine when the network just dropped.
+            self.network.invalidate()
+            retry = self._select_transcriber()
+            if retry is None or retry is self.transcriber:
+                raise
+            self.transcriber = retry
+            self.transcriber.open()
+        debug(f"echo realtime command session open engine={self.engine}")
 
     def _accept_speech(self, audio: bytes) -> None:
+        if self.transcriber is None:
+            return
         self.transcriber.send(audio)
         status = self.transcriber.poll()
 
         if status["error"]:
             self.events.emit("error", source="asr", message=str(status["error"]))
+            self.network.invalidate()
             self.reset_to_wakeword()
             return
 
@@ -317,9 +410,9 @@ class EchoRealtimeListener:
             self._emit_final_or_reset("silence")
 
     def _emit_final_or_reset(self, reason: str) -> None:
-        final = self.transcriber.finalize()
+        final = self.transcriber.finalize() if self.transcriber is not None else ""
         if final:
-            self.events.emit("final_transcript", text=final, reason=reason)
+            self.events.emit("final_transcript", text=final, reason=reason, engine=self.engine)
         else:
             self.events.emit("state", value="wakeword", reason=reason)
         self.reset_to_wakeword()
@@ -352,7 +445,8 @@ def main() -> int:
             elif command_type == "reset":
                 listener.reset_to_wakeword()
             elif command_type == "shutdown":
-                listener.transcriber.close()
+                if listener.transcriber is not None:
+                    listener.transcriber.close()
                 listener.events.emit("state", value="shutdown")
                 return 0
             else:

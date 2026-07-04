@@ -21,14 +21,18 @@ import type {
   AppConfig,
   AssistantState,
   ConversationItem,
+  EngineVariant,
   McpStatus,
   ModelStats,
   PiEvent,
   PiStatus,
   ThinkLevel,
   ThinkMode,
+  VoiceModePayload,
   WorkerEvent
 } from "../shared/types";
+import { applyEngineVariant } from "../shared/modelVariant";
+import { describeVoiceMode, formatPerfLine } from "../shared/voiceMode";
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -82,6 +86,7 @@ export function App() {
   const [inspectingNode, setInspectingNode] = useState<ConnectedNode | null>(null);
   const [toolFlashActive, setToolFlashActive] = useState(false);
   const [modelStats, setModelStats] = useState<ModelStats | null>(null);
+  const [voiceMode, setVoiceMode] = useState<VoiceModePayload | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
   const [searchQuery, setSearchQuery] = useState("");
   const [streamingText, setStreamingText] = useState<{ id: string; text: string } | null>(null);
@@ -314,6 +319,10 @@ export function App() {
       setState("idle");
       return;
     }
+    if (event.type === "voice_mode") {
+      setVoiceMode(event.payload);
+      return;
+    }
     if (event.type === "error") {
       setPendingVoiceAction(null);
       setError(`${event.payload.source}: ${event.payload.message}`);
@@ -386,6 +395,12 @@ export function App() {
     window.pythos.getMcpStatus?.().then((status) => setMcpStatus(status)).catch(() => {
       setMcpStatus({ enabled: false, servers: [] });
     });
+
+    // The worker announces its voice mode at startup; fetch the cached value in
+    // case that announcement raced the window load.
+    window.pythos.getVoiceMode?.().then((mode) => {
+      if (mode) setVoiceMode((current) => current ?? mode);
+    }).catch(() => {});
 
     const offWorker = window.pythos.onWorkerEvent(handleWorkerEvent);
     const offPi = window.pythos.onPiEvent(handlePiEvent);
@@ -470,6 +485,7 @@ export function App() {
           configSummary={configSummary}
           online={online}
           modelStats={modelStats}
+          voiceMode={voiceMode}
           showPerf={Boolean(config?.gui?.showPerformanceStats)}
           audioLevel={audioLevel}
           toolFlashActive={toolFlashActive}
@@ -549,6 +565,7 @@ function AiChamber({
   configSummary,
   online,
   modelStats,
+  voiceMode,
   showPerf,
   audioLevel,
   toolFlashActive,
@@ -564,6 +581,7 @@ function AiChamber({
   configSummary: string;
   online: boolean;
   modelStats: ModelStats | null;
+  voiceMode: VoiceModePayload | null;
   showPerf: boolean;
   audioLevel: number;
   toolFlashActive: boolean;
@@ -574,12 +592,19 @@ function AiChamber({
   onInspect: (node: ConnectedNode) => void;
   onToggle: () => void;
 }) {
-  const perfHint =
-    showPerf && modelStats && modelStats.tokensPerSecond > 0
-      ? ` · ${modelStats.tokensPerSecond} tok/s${modelStats.toolScope ? ` · tools:${modelStats.toolScope}` : ""}`
-      : modelStats?.toolScope
-        ? ` · tools:${modelStats.toolScope}`
-        : "";
+  // The worker's probe is the source of truth for the voice badge, but the
+  // browser's own offline signal flips the badge the instant Wi-Fi dies,
+  // before the next voice turn re-probes and confirms the concrete engines.
+  const voiceSummary = useMemo(() => {
+    if (voiceMode?.engine === "gradium" && !online) {
+      return {
+        label: "Voice: switching to local…",
+        detail: "Network just dropped — the next voice turn runs on the on-device engines.",
+        tone: "local" as const
+      };
+    }
+    return describeVoiceMode(voiceMode);
+  }, [voiceMode, online]);
 
   const stateLabel = useMemo(() => {
     if (state === "idle") return "Standby";
@@ -605,6 +630,21 @@ function AiChamber({
           </div>
         )}
       </header>
+
+      <div className="demo-hud" role="status" aria-label="Runtime status">
+        <span className="hud-badge on-device" title="Reasoning, tools, vision, and memory run on local Gemma via Ollama. No prompt ever leaves this machine.">
+          <span className="hud-dot" aria-hidden="true" />
+          All inference on-device
+        </span>
+        <span className={`hud-badge voice ${voiceSummary.tone}`} title={voiceSummary.detail}>
+          {voiceSummary.label}
+        </span>
+        {showPerf && modelStats && (
+          <span className="hud-badge perf" title="Live metrics from Ollama's last response (eval_count / eval_duration / prompt_eval_duration)">
+            {formatPerfLine(modelStats)}
+          </span>
+        )}
+      </div>
 
       <div className="ai-core">
         <div className="neural-field" aria-hidden="true">
@@ -654,7 +694,6 @@ function AiChamber({
           {connectedNodes.length > 0 && (
             <span className="remote-link-hint"> · {connectedNodes.length} remote{connectedNodes.length === 1 ? "" : "s"} linked</span>
           )}
-          {perfHint}
         </p>
       </div>
     </section>
@@ -1027,6 +1066,16 @@ function SettingsModal({
               checked={Boolean(settingsDraft?.python?.lowResourceMode)}
               onChange={(value) => updateDraft(onDraftChange, ["python", "lowResourceMode"], value)}
             />
+            <SettingSelect
+              label="Engine variant"
+              value={settingsDraft?.ollama?.engineVariant ?? "standard"}
+              options={[
+                { label: "Standard (GGUF, all platforms)", value: "standard" },
+                { label: "MLX (Apple Silicon speed boost)", value: "mlx" }
+              ]}
+              onChange={(value) => updateDraft(onDraftChange, ["ollama", "engineVariant"], value as EngineVariant)}
+              hint={`MLX serves ${applyEngineVariant(activeModelBase(settingsDraft), "mlx")} when pulled; falls back to the standard build automatically.`}
+            />
           </div>
         )}
 
@@ -1277,11 +1326,13 @@ function SettingSelect({
   label,
   value,
   options,
+  hint,
   onChange
 }: {
   label: string;
   value: string;
   options: Array<{ label: string; value: string }>;
+  hint?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1290,6 +1341,7 @@ function SettingSelect({
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
+      {hint && <small>{hint}</small>}
     </label>
   );
 }
@@ -1580,23 +1632,38 @@ function fullEventPayload(payload: unknown): string {
   }
 }
 
+<<<<<<< Updated upstream
 /** The Gemma model actually serving requests, honoring provider and low-resource mode. */
 function activeModel(config: AppConfig | null | undefined): string {
   if (config?.openrouter?.enabled) {
     return config.openrouter.model ?? "google/gemma-4-31b-it:free";
   }
+=======
+/** The base Gemma tag requested by settings, honoring low-resource mode. */
+function activeModelBase(config: AppConfig | null | undefined): string {
+>>>>>>> Stashed changes
   if (config?.python?.lowResourceMode && config.ollama?.lowResourceModel) {
     return config.ollama.lowResourceModel;
   }
   return config?.ollama?.model ?? "gemma4:12b";
 }
 
+<<<<<<< Updated upstream
 function brainSummary(config: AppConfig | null | undefined): string {
   const model = activeModel(config);
   if (config?.openrouter?.enabled) {
     return `Gemma · ${model} (OpenRouter)`;
   }
   return `Gemma · ${model} (local)`;
+=======
+/**
+ * The Gemma model requested by settings, including the engine variant. The
+ * perf HUD separately shows the model that actually served each turn, so a
+ * missing MLX pull is visible rather than silently misreported.
+ */
+function activeModel(config: AppConfig | null | undefined): string {
+  return applyEngineVariant(activeModelBase(config), config?.ollama?.engineVariant);
+>>>>>>> Stashed changes
 }
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {

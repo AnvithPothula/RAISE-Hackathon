@@ -28,8 +28,10 @@ Built for the **RAISE Summit Hackathon 2026** — Google DeepMind Remote / on-de
 - **Local screen vision** — “What’s on my screen?” answered without sending screenshots off-device
 - **Voice orb UI** — Electron + React desktop app with transcript, controls, and tool timeline
 - **Agentic tools** — weather, alarms, Spotify, app launcher, web search, memory, MCP connectors, and more
-- **Offline resilience** — keep chatting after Wi‑Fi drops; the model runs locally
-- **Remote nodes** — Android and Alexa/Echo clients over Tailscale (optional)
+- **Offline resilience** — keep *talking* after Wi‑Fi drops: a network detector swaps cloud voice for on-device Vosk STT + Piper/system TTS, and the local Gemma brain never skips a beat
+- **Live demo HUD** — “All inference on-device” badge, voice-mode indicator, and real tok/s + TTFT from Ollama
+- **MLX engine variant** — optional Apple-Silicon build (`gemma4:12b-mlx`) toggle for extra token throughput
+- **Remote nodes** — Android and Alexa/Echo clients over Tailscale (optional), with the same offline voice fallback
 
 ---
 
@@ -95,6 +97,19 @@ curl http://127.0.0.1:11434/api/tags
 
 You should see `gemma4:12b` (and optionally `gemma4:e2b`).
 
+**Optional — offline voice input.** Spoken replies work offline out of the box
+(Piper if installed, otherwise the OS voice). To also *speak to* Pythos with the
+network down, install the offline recognizer once:
+
+```bash
+./scripts/install-vosk-model.sh        # macOS / Linux
+# .\scripts\install-vosk-model.ps1      # Windows PowerShell
+```
+
+**Optional — MLX variant (Apple Silicon).** `ollama pull gemma4:12b-mlx`, then
+enable **Settings → Engine variant → MLX** for higher tok/s; it falls back to
+the standard build automatically when the tag is missing.
+
 ### 3. Install Python dependencies
 
 ```bash
@@ -155,7 +170,7 @@ No API keys are required for typed chat, tools, or screen vision.
 
 | Variable | Purpose |
 |----------|---------|
-| `GRADIUM_API_KEY` | Spoken voice (STT + TTS) via [Gradium](https://studio.gradium.ai) |
+| `GRADIUM_API_KEY` | Studio-quality cloud voice (STT + TTS) via [Gradium](https://studio.gradium.ai); without it (or offline) voice runs on-device (Vosk + Piper/system TTS) |
 | `PYTHOS_OLLAMA_MODEL` | Override default model (`gemma4:12b`) |
 | `PYTHOS_OLLAMA_URL` | Override Ollama endpoint |
 | `PYTHOS_CURSOR_WORKSPACE` | Project path for Cursor agent delegation |

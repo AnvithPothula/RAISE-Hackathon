@@ -163,6 +163,22 @@ Merged `Intent-based` into `main` and optimized for demo reliability:
 
 Other fixes: contextual Spotify follow-ups no longer skipped when a direct match exists; fallback path uses intent scope; demo HUD shows `tools:none/minimal/…` beside tok/s. Tests: **77 pass**.
 
+### Sixth pass: offline voice fallback, live voice-mode HUD, MLX variant ✅
+Closed the last P0 gap and both remaining stretch-capable items. The money-shot demo (kill Wi-Fi mid-conversation and **keep talking**) now works end-to-end:
+
+| Layer | What shipped |
+|-------|--------------|
+| **Network-state detector** | `src/pythos/network_monitor.py` — dependency-free cached TCP probe (Gradium host + anycast DNS fallbacks, ~1 s timeout, 3 s TTL) plus `is_network_error()` classification that walks exception chains, so only genuine transport failures trigger fallback (an auth rejection still surfaces as a real error) |
+| **Offline STT** | `src/pythos/local_voice.py` — Vosk engine restored/modernized from the pre-Gradium git history (`4cd88d7`): streaming partials, silence/ASR timeouts, wake word matched on live transcripts (same policy as the Gradium path, no extra wake model needed), plus a push-mode variant for the Echo bridge |
+| **Offline TTS** | Defensive chain: **Piper** when the configured executable+voice exist (tolerates the committed Windows-era `piper.exe` path on mac/Linux) → **OS system voice** (`say` / `System.Speech` / `espeak-ng`) so spoken replies need zero setup on every OS. Verified on the demo Mac: `say` fallback writes a playable 22.05 kHz WAV |
+| **Per-turn + mid-stream swap** | `SpeechListener` and the new `HybridSpeaker` consult a shared `VoiceModeReporter` before every turn and re-probe after any mid-stream network error — a Gradium socket dying mid-utterance falls back to the local engine for that same turn instead of erroring. Gemma brain path completely untouched |
+| **No API key = local voice** | `GRADIUM_API_KEY` missing is no longer a startup error: the worker simply announces local voice mode (zero-setup rule) |
+| **Demo HUD** | New `voice_mode` worker event → `main.ts` cache (+ `voice:getMode` IPC for late-loading renderers) → HUD badges: **● All inference on-device**, live **Voice: Gradium (cloud) / Local (offline) / text only**, and the perf line now shows **tok/s + TTFT + tokens + model** (task 14 finally renders TTFT). Browser offline events flip the badge instantly while the next probe confirms |
+| **Echo/Android offline parity** | `echo_tools.py` and `echo_realtime_worker.py` select engines exactly like the desktop pipeline (Gradium ↔ Vosk push transcriber ↔ local synth), with engine names surfaced in bridge events |
+| **MLX engine variant (P2 #18)** | `ollama.engineVariant` (`standard`/`mlx`) + Settings toggle. `src/shared/modelVariant.ts` gates MLX to Apple Silicon and produces the fallback candidate order (`gemma4:e2b-mlx → gemma4:e2b → gemma4:12b → gemma4:12b-mlx`), so enabling the toggle without pulling the MLX tag can never break inference; warm-up now primes the model that will actually serve |
+
+Also fixed while in there: restored the `formatMacOpenFailure` export (its tests were silently broken at HEAD) and repaired a stale `config.test.ts` that used think-level values for `ollama.think`. Tests: **127 TS + 37 Python pass** (was 124/3-broken + 7); both TS projects typecheck clean; production build green.
+
 ### P0 — Gemma on-device brain ✅
 | # | Task | Status |
 |---|------|--------|
@@ -174,12 +190,12 @@ Other fixes: contextual Spotify follow-ups no longer skipped when a direct match
 | 6 | `config.json`: `gemma4:12b`, low-resource → `gemma4:e2b` | ✅ |
 | 7 | Tool verification (weather, alarm, Spotify, etc.) | ✅ 40 TS tests passing |
 
-### P0 — Offline mode + kill switch ⚠️ partial
+### P0 — Offline mode + kill switch ✅
 | # | Task | Status |
 |---|------|--------|
-| 8 | Vosk STT + Piper TTS offline fallback | ⏳ Not wired — voice still Gradium-only; **typed chat + Gemma brain work offline** |
-| 9 | UI badge "● All inference on-device" + mode indicator | ✅ Demo HUD in `App.tsx` |
-| 10 | Wi-Fi-off rehearsal | 🎬 Ready to demo typed prompts offline |
+| 8 | Vosk STT + Piper TTS offline fallback | ✅ Wired behind a network-state detector (`network_monitor.py`); per-turn **and mid-stream** engine swap; TTS chain Piper → OS system voice so speech output needs zero setup; Gemma brain path untouched |
+| 9 | UI badge "● All inference on-device" + mode indicator | ✅ Demo HUD in `App.tsx`: on-device badge + live "Voice: Gradium (cloud) / Local (offline)" driven by worker `voice_mode` events |
+| 10 | Wi-Fi-off rehearsal | 🎬 Ready end-to-end: voice **and** typed prompts survive the kill switch; HUD flips live; TTS audibly switches to the local voice |
 
 ### P0 — Compliance & repo ✅
 | # | Task | Status |
@@ -191,9 +207,9 @@ Other fixes: contextual Spotify follow-ups no longer skipped when a direct match
 ### P1 — Demo-strengtheners ✅
 | # | Task | Status |
 |---|------|--------|
-| 14 | Perf HUD (tok/s, TTFT) | ✅ `ModelStats` → demo HUD |
-| 15 | Android/Echo remote demo beat | ✅ Bridge exists, orb nodes in UI |
-| 16 | Persistent local memory beat | ✅ `update_user_memory` tool |
+| 14 | Perf HUD (tok/s, TTFT) | ✅ `ModelStats` → demo HUD; now renders **tok/s + TTFT + token count + model** from Ollama's `eval_count`/`eval_duration`/`prompt_eval_duration` (TTFT was computed but never displayed before) |
+| 15 | Android/Echo remote demo beat | ✅ Bridge round-trip verified against the intent-routing layer; Echo STT/TTS now share the same offline fallback (Vosk push transcriber + local synth), so the remote node survives Wi-Fi loss too |
+| 16 | Persistent local memory beat | ✅ `update_user_memory` tool; recall verified fully offline: "remember …" routes instantly (no model), memory file survives restart, recall questions run tool-free with memory injected into local Gemma context — tests cover the exact demo beat |
 
 ### Agentic enhancements (event-built, beyond original cut list) ✅
 Shipped because they strengthen **Demo (50%)** and **Creativity (15%)** without violating the banned-category check:
@@ -209,12 +225,12 @@ Shipped because they strengthen **Demo (50%)** and **Creativity (15%)** without 
 
 Brain stays **100% local Gemma**. MCP file tools and web_search are optional online enhancements layered on top — same honest hybrid story as Gemma Vision winners.
 
-### P2 — Still deferred
+### P2 — Stretch
 | # | Task | Status |
 |---|------|--------|
-| 17 | Native audio-in to Gemma E4B | ⏳ |
-| 18 | MLX variant A/B | ⏳ |
-| 19 | Landing page | ⏳ |
+| 17 | Native audio-in to Gemma E4B | ⏳ Deferred (Ollama audio-input path unproven; 1 h timebox stands) |
+| 18 | MLX variant A/B | ✅ `ollama.engineVariant` setting + Settings → Engine variant toggle; clean abstraction in `src/shared/modelVariant.ts` (host gating + graceful candidate fallback); HUD names the model that actually served, so the A/B readout is live tok/s |
+| 19 | Landing page | ⏳ Deferred (not judged directly) |
 
 ### Bonus track angles
 - **Cursor track synergy:** Cursor agent delegation + local Gemma brain = "private voice assistant that can also ship code via Cursor when online."
@@ -228,8 +244,8 @@ Brain stays **100% local Gemma**. MCP file tools and web_search are optional onl
 | t | Beat |
 |---|---|
 | 18–30 s | **Tool call:** alarm + screen vision + **"research the best…"** → `deep_research` loops locally then answers |
-| 30–42 s | **Kill Wi-Fi.** Typed: "what time is it?" + memory recall. HUD shows **● All inference on-device** + tok/s |
-| 42–52 s | Show **MCP Connectors** panel (system/filesystem/memory connected). Echo/Android node if time |
+| 30–42 s | **Kill Wi-Fi.** Keep **talking** — the reply voice audibly switches to the local engine and the HUD flips to **Voice: Local (offline)** beside **● All inference on-device** + tok/s/TTFT. Memory recall beat ("when is my girlfriend's birthday?") lands here |
+| 42–52 s | Show **MCP Connectors** panel (system/filesystem/memory connected). Echo/Android node if time — it survives the same Wi-Fi kill |
 
 ---
 

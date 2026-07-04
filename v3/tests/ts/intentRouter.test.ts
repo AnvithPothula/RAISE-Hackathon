@@ -21,6 +21,27 @@ describe("routeUserIntent", () => {
     expect(decision.invocation?.name).toBe("memory");
   });
 
+  it("captures the demo memory beat verbatim", () => {
+    const decision = routeUserIntent("Remember that my girlfriend's birthday is March 3rd");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "memory",
+      args: { action: "add", text: "my girlfriend's birthday is March 3rd" }
+    });
+  });
+
+  it("routes memory listing instantly (no model, works offline)", () => {
+    const decision = routeUserIntent("what do you remember");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "memory", args: { action: "list" } });
+  });
+
+  it("answers memory recall questions with zero tools so offline Gemma uses injected memory", () => {
+    const decision = routeUserIntent("when is my girlfriend's birthday");
+    expect(decision.invocation).toBeNull();
+    expect(decision.llmToolScope).toBe("none");
+  });
+
   it("uses no tools for general-knowledge chat", () => {
     const decision = routeUserIntent("tell me something interesting about Minnesota");
     expect(decision.difficulty).toBe("simple");

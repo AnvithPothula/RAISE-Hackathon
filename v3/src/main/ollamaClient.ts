@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
+import { orderModelCandidates, resolveVariantModel, type HostInfo } from "../shared/modelVariant.js";
 import { isToolAllowedForScope, multiPartAnswerNudge, promptNeedsMultiToolLoop, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
 import { runNamedLocalTool } from "./localTools.js";
 import {
@@ -27,6 +28,10 @@ const REQUEST_TIMEOUT_MS = 120000;
 // TTFT seen in demos). 30m covers a full demo/judging session.
 const KEEP_ALIVE = process.env.PYTHOS_OLLAMA_KEEP_ALIVE || "30m";
 
+// The engine-variant abstraction (plan P2 #18) gates the MLX build to hosts
+// that can actually run it. Resolved once: platform/arch cannot change at runtime.
+const HOST: HostInfo = { platform: process.platform, arch: process.arch };
+
 // Resolution order: explicit env override > config.json > built-in default. The
 // env override keeps CI/scripts flexible; config.json is what the app ships with.
 function resolveOllamaUrl(config?: AppConfig): string {
@@ -35,15 +40,19 @@ function resolveOllamaUrl(config?: AppConfig): string {
 
 export function resolveOllamaModel(config?: AppConfig): string {
   if (process.env.PYTHOS_OLLAMA_MODEL) {
+    // Explicit override is used verbatim — no variant rewriting.
     return process.env.PYTHOS_OLLAMA_MODEL;
   }
   // Low-resource mode swaps the dense 12B for the small E2B model so Pythos runs
   // on modest hardware. Requires the low-resource model to be pulled first
   // (`ollama pull gemma4:e2b`).
-  if (config?.python?.lowResourceMode && config.ollama?.lowResourceModel) {
-    return config.ollama.lowResourceModel;
-  }
-  return config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
+  const base =
+    config?.python?.lowResourceMode && config.ollama?.lowResourceModel
+      ? config.ollama.lowResourceModel
+      : config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
+  // Settings may request the MLX build (e.g. gemma4:12b-mlx) for higher tok/s
+  // on Apple Silicon; other hosts silently keep the standard build.
+  return resolveVariantModel(base, config?.ollama?.engineVariant, HOST);
 }
 
 /** The Gemma model that will actually serve requests for this config (honors low-resource mode). */
@@ -79,18 +88,23 @@ async function resolveVisionModel(config?: AppConfig): Promise<string> {
   return resolveInstalledOllamaModel(config);
 }
 
-/** Pick a pulled model, falling back from low-resource to the default when needed. */
+/**
+ * Pick a pulled model, walking the graceful-degradation candidate order:
+ * requested variant build → its standard build → the configured full model →
+ * its variant build → any pulled Gemma 4. Enabling the MLX toggle without
+ * having pulled the MLX tag therefore never breaks inference (zero-setup rule).
+ */
 export async function resolveInstalledOllamaModel(config?: AppConfig): Promise<string> {
   const preferred = resolveOllamaModel(config);
   const pulled = await listPulledModelNames(config);
-  if (pulled.includes(preferred)) {
-    installedModelOverride = preferred;
-    return preferred;
-  }
-  const fallback = config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
-  if (preferred !== fallback && pulled.includes(fallback)) {
-    installedModelOverride = fallback;
-    return fallback;
+  const candidates = process.env.PYTHOS_OLLAMA_MODEL
+    ? [preferred]
+    : orderModelCandidates(config, HOST, DEFAULT_OLLAMA_MODEL);
+  for (const candidate of candidates) {
+    if (pulled.includes(candidate)) {
+      installedModelOverride = candidate;
+      return candidate;
+    }
   }
   const anyGemma = pulled.find((name) => name.startsWith("gemma4:"));
   if (anyGemma) {
@@ -636,7 +650,10 @@ export async function warmUpModel(config?: AppConfig): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(60000),
       body: JSON.stringify({
-        model: resolveOllamaModel(config),
+        // Warm the model that will actually serve (honors variant fallback),
+        // not just the requested tag — otherwise an unpulled MLX tag would
+        // make the warm-up a silent no-op and TTFT would regress.
+        model: await resolveInstalledOllamaModel(config),
         keep_alive: KEEP_ALIVE,
         think: false,
         stream: false,
@@ -660,12 +677,11 @@ export async function isOllamaReady(config?: AppConfig): Promise<boolean> {
   if (!pulled.length) {
     return false;
   }
-  const preferred = resolveOllamaModel(config);
-  if (pulled.includes(preferred)) {
-    return true;
-  }
-  const fallback = config?.ollama?.model || DEFAULT_OLLAMA_MODEL;
-  return pulled.includes(fallback) || pulled.some((name) => name.startsWith("gemma4:"));
+  const candidates = orderModelCandidates(config, HOST, DEFAULT_OLLAMA_MODEL);
+  return (
+    candidates.some((candidate) => pulled.includes(candidate)) ||
+    pulled.some((name) => name.startsWith("gemma4:"))
+  );
 }
 
 type ChatOptions = {

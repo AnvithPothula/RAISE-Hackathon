@@ -24,4 +24,16 @@ describe("UserMemoryStore", () => {
     expect(store.forget({ id: item.id })?.text).toBe("The user prefers short answers.");
     expect(store.list()).toEqual([]);
   });
+
+  it("persists memories across store instances (app restart, fully offline)", () => {
+    // The demo beat: remember a fact, quit, relaunch with Wi-Fi off, recall it.
+    // The store is a plain local JSON file, so a fresh instance pointed at the
+    // same path must see the fact with no network involved.
+    const filePath = path.join(os.tmpdir(), `test-memory-${Date.now()}-${Math.random()}.json`);
+    const before = new UserMemoryStore(filePath);
+    before.remember({ text: "The user's girlfriend's birthday is March 3rd.", category: "profile" });
+
+    const afterRestart = new UserMemoryStore(filePath);
+    expect(afterRestart.summary()).toContain("girlfriend's birthday is March 3rd");
+  });
 });

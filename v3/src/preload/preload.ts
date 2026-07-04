@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AppConfig, McpStatus, ModelStats, PiEvent, PiStatus, WorkerEvent } from "../shared/types.js";
+import type {
+  AppConfig,
+  McpStatus,
+  ModelStats,
+  PiEvent,
+  PiStatus,
+  VoiceModePayload,
+  WorkerEvent
+} from "../shared/types.js";
 
 const api = {
   startListening: () => ipcRenderer.invoke("worker:startListening") as Promise<void>,
@@ -13,6 +21,7 @@ const api = {
   getPiCommands: () => ipcRenderer.invoke("pi:getCommands") as Promise<void>,
   getPiStatus: () => ipcRenderer.invoke("pi:getStatus") as Promise<PiStatus>,
   getMcpStatus: () => ipcRenderer.invoke("mcp:getStatus") as Promise<McpStatus>,
+  getVoiceMode: () => ipcRenderer.invoke("voice:getMode") as Promise<VoiceModePayload | null>,
   promptAssistant: (message: string) => ipcRenderer.invoke("assistant:prompt", message) as Promise<boolean>,
   clearAssistantContext: () => ipcRenderer.invoke("assistant:clearContext") as Promise<boolean>,
   getConfig: () => ipcRenderer.invoke("app:getConfig") as Promise<AppConfig>,

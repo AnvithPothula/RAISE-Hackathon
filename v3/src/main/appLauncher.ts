@@ -21,6 +21,21 @@ export async function openLocalApp(target: string): Promise<AppOpenOutcome> {
   return openLocalAppOnWindows(target);
 }
 
+/**
+ * Human-readable failure text for a macOS `open -a` attempt. Exported for
+ * tests; used by the mac open path below when the launch command fails.
+ */
+export function formatMacOpenFailure(target: string, stderr: string): string {
+  const cleaned = stderr.trim();
+  if (/unable to find application/i.test(cleaned)) {
+    return `${target} is not installed or not available on this Mac. I couldn't open it.`;
+  }
+  if (cleaned) {
+    return `I couldn't open ${target}: ${cleaned}`;
+  }
+  return `${target} is unavailable on this Mac. I couldn't open it.`;
+}
+
 function macAppInstalled(appName: string): Promise<boolean> {
   const escaped = appName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return new Promise((resolve) => {
@@ -55,13 +70,7 @@ function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
           resolve({ opened: true, detail: `Opened ${target}.` });
           return;
         }
-        const reason = stderr.trim();
-        resolve({
-          opened: false,
-          detail: reason.includes("Unable to find application")
-            ? appNotFoundMessage(target, "Mac")
-            : reason || appNotFoundMessage(target, "Mac")
-        });
+        resolve({ opened: false, detail: formatMacOpenFailure(target, stderr) });
       });
     })();
   });

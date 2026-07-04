@@ -36,7 +36,7 @@ describe("per-user settings", () => {
     const defaults = readConfig();
 
     const next = structuredClone(defaults);
-    next.ollama.think = defaults.ollama.think === "high" ? "low" : "high";
+    next.ollama.think = defaults.ollama.think === "on" ? "off" : "on";
     writeConfig(next);
 
     // Shared, committed config is untouched.

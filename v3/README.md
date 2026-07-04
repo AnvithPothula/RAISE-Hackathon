@@ -12,10 +12,12 @@ Built for the RAISE Summit Hackathon 2026 (Google DeepMind Remote / on-device Ge
 Work created at the event (see git history on `main`):
 
 - **Gemma 4 on-device brain** — full migration from cloud Gemini to local Ollama (`gemma4:12b`), including tool calling, vision, and adaptive thinking
+- **Offline voice fallback** — a network-state detector swaps the streaming Gradium cloud voice for on-device Vosk STT + Piper/system TTS the moment the network drops (or when no API key is set); the Gemma brain never notices
 - **Agentic loops** — `deep_research` self-looping research agent, local sub-agents, `run_code` sandbox
 - **Cursor integration** — optional `delegate_coding_task` via Cursor agent CLI when installed
 - **MCP connector layer** — pythos-system, filesystem, and memory servers with live status in the UI
-- **Demo HUD** — on-device badge, offline indicator, tok/s + TTFT performance stats for judges
+- **Demo HUD** — on-device badge, live voice-mode indicator (cloud vs local), tok/s + TTFT performance stats for judges
+- **MLX engine variant** — Settings toggle to serve the Apple-Silicon MLX build (`gemma4:12b-mlx`) with automatic fallback to the standard build
 - **Gradium streaming voice**, cross-platform/Mac support, Alexa/Android remote bridge, SSL fix
 
 ## Architecture
@@ -28,9 +30,13 @@ Work created at the event (see git history on `main`):
   alarms, Spotify, open app/website, web search, calculator, memory, MCP tools.
 - **Electron main:** process supervision, typed IPC, tool dispatch, Echo/Android bridge.
 - **React renderer:** voice orb visualizer, transcript, controls, tool timeline.
-- **Voice:** wake word, STT, and TTS currently run through the Gradium cloud API
-  (typed input works fully offline). Legacy Vosk/Piper assets remain for the
-  offline-voice fallback.
+- **Voice (hybrid, offline-resilient):** with a `GRADIUM_API_KEY` and a live
+  network, wake word, STT, and TTS stream through the Gradium cloud API for
+  studio quality. A network-state detector (`src/pythos/network_monitor.py`)
+  swaps to the fully local stack — Vosk STT + Piper or the OS system voice —
+  per turn and even mid-stream when the connection dies, so voice keeps
+  working offline. With no API key the local stack is simply the default.
+  The active mode is announced over `voice_mode` events and shown in the HUD.
 - **Python worker:** audio capture/playback and the speech pipeline (no LLM).
 
 ## Prerequisites
@@ -75,8 +81,23 @@ npm install
 npm install
 ```
 
-No API key is required to run the assistant. For spoken voice (optional), add
-`GRADIUM_API_KEY` — see `API_KEYS_SETUP.txt`.
+No API key is required to run the assistant. For cloud spoken voice (optional),
+add `GRADIUM_API_KEY` — see `API_KEYS_SETUP.txt`.
+
+### 3. (Optional) Offline speech recognition
+
+Speech *output* works offline out of the box (Piper when installed, otherwise
+the OS voice — macOS `say`, Windows `System.Speech`, Linux `espeak-ng`). For
+offline speech *input* (mic + wake word with no network/key), download the
+Vosk model once:
+
+```bash
+./scripts/install-vosk-model.sh          # macOS / Linux
+# .\scripts\install-vosk-model.ps1        # Windows PowerShell
+```
+
+Without it, offline sessions are typed-input + spoken-output; the HUD shows
+the exact mode either way.
 
 ## Run
 
@@ -93,6 +114,20 @@ On modest hardware, enable **"Low resource mode"** in Settings (or set
 `python.lowResourceMode: true` in `config.json`) to run the smaller `gemma4:e2b`
 model instead of `gemma4:12b`. Pull it first (`ollama pull gemma4:e2b`). Override
 the model or endpoint any time with `PYTHOS_OLLAMA_MODEL` / `PYTHOS_OLLAMA_URL`.
+
+### MLX engine variant (Apple Silicon)
+
+For higher decode throughput on M-series Macs, set **Settings → Engine
+variant → MLX** (or `ollama.engineVariant: "mlx"`). Pythos then serves the
+MLX build of the active model (e.g. `gemma4:12b-mlx`, `gemma4:e2b-mlx`):
+
+```bash
+ollama pull gemma4:12b-mlx   # match whichever base model you use
+```
+
+The toggle is safe everywhere: on non-Apple-Silicon hosts, or when the MLX
+tag is not pulled, Pythos automatically degrades to the standard build (the
+perf HUD names the model that actually served each turn).
 
 ## MCP tool support
 
@@ -174,7 +209,16 @@ Commands are JSONL objects sent to stdin: `start_listening`, `stop_listening`,
 `speak`, `stop_speaking`, `shutdown`.
 
 Events are JSONL objects emitted to stdout: `state`, `audio_level`,
-`partial_transcript`, `final_transcript`, `tts_started`, `tts_done`, `error`.
+`partial_transcript`, `final_transcript`, `tts_started`, `tts_done`,
+`voice_mode`, `error`.
+
+`voice_mode` reports the live engine selection whenever it changes:
+
+```json
+{"type": "voice_mode", "payload": {"engine": "local", "online": false,
+ "gradiumConfigured": true, "stt": "vosk", "tts": "piper",
+ "reason": "network failure during speech recognition"}}
+```
 
 ## Notes
 
@@ -182,6 +226,7 @@ Events are JSONL objects emitted to stdout: `state`, `audio_level`,
   the machine. Configure it under the `ollama` key in `config.json`.
 - `GEMINI_API_KEY` is **not** used by the assistant anymore. It is only relevant
   for the optional, off-by-default experimental Pi tool bridge (`pi.enabled`).
-- The default ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk`;
-  `scripts/install-vosk-model.*` can reinstall it. These are for the offline-voice
-  fallback path.
+- The offline ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk`;
+  install it with `scripts/install-vosk-model.*`. Offline TTS prefers a Piper
+  install at the `models.piper*` paths in `config.json` and otherwise uses the
+  OS system voice, so spoken replies never require extra setup.
