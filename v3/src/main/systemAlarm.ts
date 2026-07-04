@@ -16,6 +16,29 @@ export type SystemAlarmResult = {
   detail: string;
 };
 
+export type SystemCalendarEventRequest = {
+  title: string;
+  startAt: number;
+  allDay?: boolean;
+};
+
+export type SystemCalendarEventResult = {
+  calendarOpened: boolean;
+  eventCreated: boolean;
+  detail: string;
+};
+
+export type SystemCalendarListRequest = {
+  startAt: number;
+  endAt: number;
+};
+
+export type SystemCalendarListResult = {
+  calendarOpened: boolean;
+  events: Array<{ title: string; startAt: number; allDay: boolean }>;
+  detail: string;
+};
+
 export type CommandOutcome = {
   code: number;
   stdout: string;
@@ -25,6 +48,7 @@ export type CommandOutcome = {
 export type SystemAlarmServices = {
   runCommand?: (command: string, args: string[], timeoutMs?: number) => Promise<CommandOutcome>;
   openClock?: (target: string) => Promise<{ opened?: boolean; detail?: string }>;
+  openCalendar?: (target: string) => Promise<{ opened?: boolean; detail?: string }>;
 };
 
 const COMMAND_TIMEOUT_MS = 15000;
@@ -54,6 +78,21 @@ function escapePowerShellSingleQuoted(value: string): string {
 function escapeAppleScriptString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
+
+const APPLESCRIPT_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+] as const;
 
 /**
  * PowerShell that registers a one-time Windows Clock alarm through the WinRT
@@ -98,28 +137,106 @@ export function buildWindowsAlarmScript(dueAt: number, label: string): string {
 }
 
 /**
- * AppleScript that opens Clock and attempts to create an alarm when the app
- * exposes a scriptable dictionary (macOS Ventura+). Errors are surfaced to the
- * caller so Pythos can still rely on its internal alarm timer.
+ * Modern macOS Clock does not expose a scriptable alarm class ("make new alarm"
+ * fails), so create a real Calendar event with a sound alarm at the due time.
  */
 export function buildMacAlarmScript(dueAt: number, label: string): string {
-  const { hours, minutes, seconds } = alarmTimeParts(dueAt);
-  const safeLabel = escapeAppleScriptString(label.trim() || "Alarm");
+  const date = new Date(dueAt);
+  const safeLabel = escapeAppleScriptString(label.trim() || "Pythos Alarm");
+  const month = APPLESCRIPT_MONTHS[date.getMonth()];
   return [
-    'tell application "Clock" to activate',
-    "delay 0.4",
-    "try",
-    '  tell application "Clock"',
-    "    set alarmTime to current date",
-    `    set hours of alarmTime to ${hours}`,
-    `    set minutes of alarmTime to ${minutes}`,
-    `    set seconds of alarmTime to ${seconds}`,
-    `    make new alarm with properties {label:"${safeLabel}", time:alarmTime, enabled:true}`,
+    "set alarmDate to current date",
+    `set year of alarmDate to ${date.getFullYear()}`,
+    `set month of alarmDate to ${month}`,
+    `set day of alarmDate to ${date.getDate()}`,
+    `set hours of alarmDate to ${date.getHours()}`,
+    `set minutes of alarmDate to ${date.getMinutes()}`,
+    `set seconds of alarmDate to ${date.getSeconds()}`,
+    'tell application "Calendar"',
+    "  set targetCalendar to first calendar",
+    "  try",
+    "    repeat with candidateCalendar in calendars",
+    "      if writable of candidateCalendar is true then",
+    "        set targetCalendar to candidateCalendar",
+    "        exit repeat",
+    "      end if",
+    "    end repeat",
+    "  end try",
+    "  tell targetCalendar",
+    `    set newEvent to make new event at end with properties {summary:"${safeLabel}", start date:alarmDate, end date:(alarmDate + 60), allday event:false}`,
     "  end tell",
-    '  return "OK:SYSTEM"',
-    "on error errMsg",
-    '  return "FAIL:" & errMsg',
-    "end try"
+    "  tell newEvent",
+    '    make new sound alarm at end of sound alarms with properties {trigger interval:0, sound name:"Sosumi"}',
+    "  end tell",
+    "end tell",
+    'return "OK:CALENDAR"'
+  ].join("\n");
+}
+
+export function buildMacCalendarEventScript(request: SystemCalendarEventRequest): string {
+  const date = new Date(request.startAt);
+  const safeTitle = escapeAppleScriptString(request.title.trim() || "Calendar event");
+  const month = APPLESCRIPT_MONTHS[date.getMonth()];
+  const duration = request.allDay ? "1 * days" : "1 * hours";
+  return [
+    "set eventDate to current date",
+    `set year of eventDate to ${date.getFullYear()}`,
+    `set month of eventDate to ${month}`,
+    `set day of eventDate to ${date.getDate()}`,
+    `set hours of eventDate to ${request.allDay ? 0 : date.getHours()}`,
+    `set minutes of eventDate to ${request.allDay ? 0 : date.getMinutes()}`,
+    `set seconds of eventDate to ${request.allDay ? 0 : date.getSeconds()}`,
+    'tell application "Calendar"',
+    "  activate",
+    "  set targetCalendar to first calendar",
+    "  try",
+    "    repeat with candidateCalendar in calendars",
+    "      if writable of candidateCalendar is true then",
+    "        set targetCalendar to candidateCalendar",
+    "        exit repeat",
+    "      end if",
+    "    end repeat",
+    "  end try",
+    "  tell targetCalendar",
+    `    make new event at end with properties {summary:"${safeTitle}", start date:eventDate, end date:(eventDate + (${duration})), allday event:${request.allDay ? "true" : "false"}}`,
+    "  end tell",
+    "end tell",
+    'return "OK:CALENDAR_EVENT"'
+  ].join("\n");
+}
+
+function buildAppleScriptDate(variableName: string, timestamp: number): string[] {
+  const date = new Date(timestamp);
+  const month = APPLESCRIPT_MONTHS[date.getMonth()];
+  return [
+    `set ${variableName} to current date`,
+    `set year of ${variableName} to ${date.getFullYear()}`,
+    `set month of ${variableName} to ${month}`,
+    `set day of ${variableName} to ${date.getDate()}`,
+    `set hours of ${variableName} to ${date.getHours()}`,
+    `set minutes of ${variableName} to ${date.getMinutes()}`,
+    `set seconds of ${variableName} to ${date.getSeconds()}`
+  ];
+}
+
+export function buildMacCalendarListScript(request: SystemCalendarListRequest): string {
+  return [
+    ...buildAppleScriptDate("rangeStart", request.startAt),
+    ...buildAppleScriptDate("rangeEnd", request.endAt),
+    "set outputLines to {}",
+    'tell application "Calendar"',
+    "  repeat with candidateCalendar in calendars",
+    "    repeat with calendarEvent in (events of candidateCalendar whose start date is greater than or equal to rangeStart and start date is less than rangeEnd)",
+    "      set eventSummary to summary of calendarEvent",
+    "      set eventStart to start date of calendarEvent",
+    "      set eventAllDay to allday event of calendarEvent",
+    '      set end of outputLines to (eventSummary & tab & ((eventStart - (date "Thursday, January 1, 1970 at 12:00:00 AM")) as integer) & tab & eventAllDay)',
+    "    end repeat",
+    "  end repeat",
+    "end tell",
+    'set AppleScript\'s text item delimiters to "\\n"',
+    "set outputText to outputLines as text",
+    'return "OK:CALENDAR_LIST\\n" & outputText'
   ].join("\n");
 }
 
@@ -146,6 +263,12 @@ export async function openSystemClockApp(services: SystemAlarmServices = {}): Pr
   const openClock = services.openClock ?? openLocalApp;
   const target = resolveClockAppTarget();
   const outcome = await openClock(target);
+  return outcome.opened !== false;
+}
+
+export async function openSystemCalendarApp(services: SystemAlarmServices = {}): Promise<boolean> {
+  const openCalendar = services.openCalendar ?? openLocalApp;
+  const outcome = await openCalendar("Calendar");
   return outcome.opened !== false;
 }
 
@@ -182,13 +305,13 @@ async function setMacSystemAlarm(
   const script = buildMacAlarmScript(request.dueAt, request.label);
   const result = await runCommand("osascript", ["-e", script], COMMAND_TIMEOUT_MS);
   const output = `${result.stdout}`.trim();
-  if (/OK:SYSTEM/i.test(output)) {
-    return { set: true, detail: "Added the alarm to the Mac Clock app." };
+  if (/OK:CALENDAR/i.test(output)) {
+    return { set: true, detail: "Added a Calendar sound alarm." };
   }
   const reason = output.replace(/^FAIL:/i, "").trim() || result.stderr.trim();
   return {
     set: false,
-    detail: reason ? `Mac Clock alarm was not saved: ${reason}` : "Mac Clock alarm was not saved."
+    detail: reason ? `Mac Clock alarm was not saved: ${reason}` : ""
   };
 }
 
@@ -225,4 +348,69 @@ export async function setSystemClockAlarm(
     systemAlarmSet: false,
     detail: "System Clock alarms are supported on Mac and Windows only."
   };
+}
+
+export async function setSystemCalendarEvent(
+  request: SystemCalendarEventRequest,
+  services: SystemAlarmServices = {}
+): Promise<SystemCalendarEventResult> {
+  const calendarOpened = process.platform === "darwin" ? true : await openSystemCalendarApp(services);
+
+  if (process.platform !== "darwin") {
+    return {
+      calendarOpened,
+      eventCreated: false,
+      detail: "Calendar event creation is currently supported on Mac only."
+    };
+  }
+
+  const runCommand = services.runCommand ?? defaultRunCommand;
+  const script = buildMacCalendarEventScript(request);
+  const result = await runCommand("osascript", ["-e", script], COMMAND_TIMEOUT_MS);
+  const output = `${result.stdout}`.trim();
+  if (/OK:CALENDAR_EVENT/i.test(output)) {
+    return {
+      calendarOpened: true,
+      eventCreated: true,
+      detail: "Added it to Calendar."
+    };
+  }
+  const reason = output.replace(/^FAIL:/i, "").trim() || result.stderr.trim();
+  return {
+    calendarOpened: true,
+    eventCreated: false,
+    detail: reason ? `Calendar event was not created: ${reason}` : "Calendar event was not created."
+  };
+}
+
+export async function listSystemCalendarEvents(
+  request: SystemCalendarListRequest,
+  services: SystemAlarmServices = {}
+): Promise<SystemCalendarListResult> {
+  const calendarOpened = process.platform === "darwin" ? true : await openSystemCalendarApp(services);
+  if (process.platform !== "darwin") {
+    return { calendarOpened, events: [], detail: "Calendar reading is currently supported on Mac only." };
+  }
+
+  const runCommand = services.runCommand ?? defaultRunCommand;
+  const script = buildMacCalendarListScript(request);
+  const result = await runCommand("osascript", ["-e", script], COMMAND_TIMEOUT_MS);
+  const output = `${result.stdout}`.trim();
+  if (!/^OK:CALENDAR_LIST/i.test(output)) {
+    const reason = output.replace(/^FAIL:/i, "").trim() || result.stderr.trim();
+    return { calendarOpened: true, events: [], detail: reason ? `Calendar events were not read: ${reason}` : "Calendar events were not read." };
+  }
+
+  const events = output
+    .replace(/^OK:CALENDAR_LIST\s*/i, "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [title = "", epochSeconds = "0", allDay = "false"] = line.split(/\t/);
+      return { title, startAt: Number(epochSeconds) * 1000, allDay: /^true$/i.test(allDay) };
+    })
+    .filter((event) => event.title && Number.isFinite(event.startAt));
+
+  return { calendarOpened: true, events, detail: events.length ? "Read Calendar events." : "No Calendar events found." };
 }

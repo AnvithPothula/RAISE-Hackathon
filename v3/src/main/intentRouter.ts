@@ -2,6 +2,7 @@ import type { LocalToolInvocation, LocalToolName } from "./localTools.js";
 import { looksLikeFolderOpenRequest, looksLikeFolderPath, parseFolderTarget } from "./filesystemAccess.js";
 import { extractMathExpression, looksLikeMathQuestion } from "./mathExpression.js";
 import { extractLocationFromPrompt } from "./locationUtils.js";
+import { normalizeAlarmTimePhrase } from "./dateContext.js";
 import { cleanAppTarget, stripConversationalPrefix } from "./voiceTranscript.js";
 
 /** instant = run a local tool with zero LLM; simple/complex = Gemma with trimmed/full tools. */
@@ -13,6 +14,8 @@ export type LlmToolScope = "none" | "minimal" | "standard" | "full";
 export type IntentRoutingContext = {
   previousToolName?: LocalToolName | null;
   knownLocation?: string | null;
+  /** Recent user utterances, used to recover alarm times from follow-ups. */
+  recentUserText?: string | null;
 };
 
 export type IntentDecision = {
@@ -61,6 +64,7 @@ const MINIMAL_LLM_TOOLS = new Set([
   "open_website",
   "web_search",
   "control_spotify",
+  "create_calendar_event",
   "update_user_memory"
 ]);
 
@@ -102,7 +106,8 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
     resolveOpenFolderIntent(cleanPrompt, normalized) ??
     resolveDirectoryIntent(cleanPrompt, normalized) ??
     resolveCalculatorIntent(cleanPrompt, normalized) ??
-    resolveAlarmIntent(cleanPrompt, normalized) ??
+    resolveAlarmIntent(cleanPrompt, normalized, context) ??
+    resolveCalendarIntent(cleanPrompt, normalized) ??
     resolveMemoryIntent(cleanPrompt, normalized) ??
     resolveWebSearchIntent(cleanPrompt, normalized) ??
     resolveGoToWebsiteIntent(cleanPrompt, normalized) ??
@@ -132,9 +137,10 @@ export function routeUserIntent(prompt: string, context: IntentRoutingContext = 
 export function resolveContextualLocalTool(
   prompt: string,
   previousToolName: LocalToolName | null | undefined,
-  knownLocation?: string | null
+  knownLocation?: string | null,
+  recentUserText?: string | null
 ): LocalToolInvocation | null {
-  const decision = routeUserIntent(prompt, { previousToolName, knownLocation });
+  const decision = routeUserIntent(prompt, { previousToolName, knownLocation, recentUserText });
   return decision.reason.startsWith("contextual:") ? decision.invocation : null;
 }
 
@@ -191,7 +197,7 @@ function looksLikeGeneralKnowledge(normalized: string): boolean {
     return false;
   }
   if (
-    /\b(weather|forecast|open|launch|start|play|spotify|alarm|clipboard|screen|folder|directory|download|search|google|remember|forget|calculate|inspect|code|research|delegate|sub agent)\b/.test(
+    /\b(weather|forecast|open|launch|start|play|spotify|alarm|calendar|schedule|planned|clipboard|screen|folder|directory|download|search|google|remember|forget|calculate|inspect|code|research|delegate|sub agent)\b/.test(
       normalized
     )
   ) {
@@ -218,6 +224,34 @@ function resolveContextualIntent(
     const spotify = resolveSpotifyFollowUp(cleanPrompt, normalized);
     if (spotify) {
       return instantDecision(spotify, "contextual:spotify");
+    }
+  }
+
+  if (previous === "alarm") {
+    const wantsAlarmAction =
+      /\b(create|make|set|lock in|do it|actually)\b.*\balarm\b/.test(normalized) ||
+      /\b(haven't|have not|didn't|did not)\b.*\b(created|set|made)\b.*\balarm\b/.test(normalized) ||
+      /\bi\s+said\b/.test(normalized) ||
+      /\block\s+in\b/.test(normalized);
+    if (wantsAlarmAction) {
+      const time = resolveAlarmTime(cleanPrompt, context);
+      if (time) {
+        return instantDecision(
+          { name: "alarm", args: { action: "set", time, label: "Alarm" } },
+          "contextual:alarm-set"
+        );
+      }
+    }
+  }
+
+  if (previous === "calendar") {
+    const followUpDate = extractCalendarDateText(cleanPrompt);
+    const title = followUpDate ? extractRecentCalendarTitle(context.recentUserText ?? "") : "";
+    if (followUpDate && title) {
+      return instantDecision(
+        { name: "calendar", args: { action: "add", title, date: followUpDate } },
+        "contextual:calendar-date"
+      );
     }
   }
 
@@ -347,18 +381,24 @@ function resolveCalculatorIntent(cleanPrompt: string, normalized: string): Local
   return null;
 }
 
-function resolveAlarmIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
-  if (/\b(list|show)\s+(?:my\s+|all\s+)?alarms?\b/.test(normalized)) {
+function resolveAlarmIntent(
+  cleanPrompt: string,
+  normalized: string,
+  context: IntentRoutingContext = {}
+): LocalToolInvocation | null {
+  if (isAlarmListQuery(normalized)) {
     return { name: "alarm", args: { action: "list" } };
   }
   const cancelId = cleanPrompt.match(/\b(?:cancel|delete|remove|stop)\s+(?:the\s+)?alarm\s+(alarm-[a-z0-9]+)\b/i);
   if (cancelId) {
     return { name: "alarm", args: { action: "cancel", id: cancelId[1] } };
   }
-  if (!/\b(alarm|wake me|remind me)\b/.test(normalized)) {
+  const alarmSegment = extractAlarmRelevantSegment(cleanPrompt);
+  const segmentNormalized = normalizeCommandText(alarmSegment);
+  if (!/\b(alarm|wake me|remind me)\b/.test(segmentNormalized) && !/\b(alarm|wake me|remind me)\b/.test(normalized)) {
     return null;
   }
-  const time = extractAlarmTimeFromPrompt(cleanPrompt);
+  const time = resolveAlarmTime(alarmSegment, context) ?? resolveAlarmTime(cleanPrompt, context);
   if (!time) {
     return null;
   }
@@ -371,6 +411,146 @@ function resolveAlarmIntent(cleanPrompt: string, normalized: string): LocalToolI
       label: labelMatch?.[1]?.trim() || "Alarm"
     }
   };
+}
+
+function isAlarmListQuery(normalized: string): boolean {
+  if (/\b(list|show)\s+(?:my\s+|all\s+)?alarms?\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(create|make|set|schedule|add)\s+(?:an?\s+)?alarm\b/.test(normalized)) {
+    return false;
+  }
+  if (/\b(do i have|have i got|any|what|which|tell me about)\b.*\balarm\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(don'?t|do not|haven't|have not|no)\b.*\balarm\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(you have|you got)\s+an?\s+alarm\b/.test(normalized)) {
+    return true;
+  }
+  if (/\balarm\s+set\s+for\b/.test(normalized) && /\b(what|when|that)\b/.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function extractAlarmRelevantSegment(prompt: string): string {
+  const segments = prompt.split(/[.!?]+/).map((part) => part.trim()).filter(Boolean);
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (
+      /\b(create|make|set|schedule|sat|signal|sudden)\b.*\balarm\b/i.test(segment) ||
+      /\balarm\b.*\b(for|at|\d|am|pm|tomorrow|tonight)\b/i.test(segment)
+    ) {
+      return segment;
+    }
+  }
+  return prompt;
+}
+
+function resolveAlarmTime(prompt: string, context: IntentRoutingContext): string | null {
+  const currentPromptTime = extractAlarmTimeFromPrompt(prompt);
+  if (currentPromptTime || hasExplicitAlarmTimeCue(prompt)) {
+    return currentPromptTime;
+  }
+  return (
+    (context.recentUserText ? extractAlarmTimeFromPrompt(context.recentUserText) : null)
+  );
+}
+
+function hasExplicitAlarmTimeCue(prompt: string): boolean {
+  const normalized = normalizeAlarmTimePhrase(prompt);
+  return /\b(?:at|for|said)\s+(?:\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/.test(
+    normalized
+  );
+}
+
+function resolveCalendarIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
+  if (isCalendarQuery(normalized)) {
+    const date = extractCalendarDateText(cleanPrompt);
+    if (date) {
+      return {
+        name: "calendar",
+        args: {
+          action: "list",
+          date,
+          period: /\bmorning\b/.test(normalized) ? "morning" : undefined
+        }
+      };
+    }
+  }
+  if (!/\b(add|ad|put|schedule|create)\b/.test(normalized)) {
+    return null;
+  }
+  if (!looksLikeCalendarDate(normalized)) {
+    return null;
+  }
+  const match = cleanPrompt.match(
+    /^(?:please\s+)?(?:add|ad|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+(.+)$/i
+  );
+  if (!match) {
+    return null;
+  }
+  const title = cleanCalendarTitle(match[1] ?? "");
+  const date = (match[2] ?? "").trim();
+  if (!title || !date) {
+    return null;
+  }
+  return { name: "calendar", args: { action: "add", title, date } };
+}
+
+function isCalendarQuery(normalized: string): boolean {
+  return (
+    /\b(what|show|list|tell me)\b/.test(normalized) &&
+    /\b(have|calendar|schedule|planned|plans|doing)\b/.test(normalized) &&
+    looksLikeCalendarDate(normalized)
+  );
+}
+
+function extractCalendarDateText(prompt: string): string | null {
+  const cleaned = prompt.trim().replace(/[.!?]+$/g, "");
+  const normalized = normalizeCommandText(cleaned);
+  if (/^(today|tomorrow)$/i.test(cleaned)) {
+    return cleaned;
+  }
+  const weekday = cleaned.match(/\b(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/i);
+  if (weekday) {
+    return weekday[1] ?? null;
+  }
+  const monthDay = cleaned.match(
+    /\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b/i
+  );
+  if (monthDay) {
+    return monthDay[0];
+  }
+  const numeric = normalized.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/);
+  return numeric?.[0] ?? null;
+}
+
+function extractRecentCalendarTitle(recentUserText: string): string {
+  const parts = recentUserText.split(/\s+(?=(?:add|ad|put|schedule|create)\b)/i).reverse();
+  for (const part of parts) {
+    const match = part.match(/^(?:add|ad|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+(.+)$/i);
+    if (match?.[1]) {
+      return cleanCalendarTitle(match[1]);
+    }
+  }
+  return "";
+}
+
+function cleanCalendarTitle(value: string): string {
+  return value
+    .replace(/\b(?:to|on)\s+(?:my\s+)?calendar\b/gi, "")
+    .replace(/\b(?:event|calendar event)\s+(?:called|named)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeCalendarDate(normalized: string): boolean {
+  return /\b(today|tomorrow|sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec|\d{1,2}\/\d{1,2})\b/.test(
+    normalized
+  );
 }
 
 function resolveMemoryIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
@@ -480,6 +660,7 @@ export function collectInstantInvocations(
   add(resolveTimeIntent(cleanPrompt, normalized, context.knownLocation));
   add(resolveCalculatorIntent(cleanPrompt, normalized));
   add(resolveClipboardIntent(cleanPrompt, normalized));
+  add(resolveAlarmIntent(cleanPrompt, normalized, context));
   add(resolveTrailingOpenIntent(cleanPrompt));
 
   return invocations;
@@ -538,7 +719,7 @@ function resolveTrailingOpenIntent(cleanPrompt: string): LocalToolInvocation | n
     /\band\s+(?:also\s+)?(?:please\s+)?(?:openup|open|launch|start|pull|bring|fire)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
   );
   if (embedded) {
-    return resolveOpenIntentFromTarget(embedded[1]);
+    return resolveOpenIntentFromTarget(embedded[1] ?? "");
   }
   if (/\b(?:weather|forecast|temperature|time|what|how|why|calculate|clipboard)\b/i.test(cleanPrompt)) {
     return resolveOpenIntent(cleanPrompt);
@@ -566,7 +747,7 @@ function resolveOpenIntentFromTarget(rawTarget: string, cleanPrompt?: string): L
   if (isWebsiteTarget(normalized, target)) {
     return { name: "open_website", args: { url: target } };
   }
-  if (looksLikeFolderOpenRequest(cleanPrompt, rawTarget)) {
+  if (looksLikeFolderOpenRequest(cleanPrompt ?? "", rawTarget)) {
     return null;
   }
   if (isDirectAppLaunchTarget(normalized, target)) {
@@ -660,6 +841,9 @@ export function needsMultiToolLoop(cleanPrompt: string, normalized: string): boo
   }
 
   if (categories.size >= 2) {
+    if (categories.has("open") && categories.has("alarm") && extractAlarmTimeFromPrompt(cleanPrompt)) {
+      return false;
+    }
     return true;
   }
 
@@ -786,21 +970,155 @@ function normalizeCommandText(value: string): string {
     .trim();
 }
 
-function extractAlarmTimeFromPrompt(prompt: string): string | null {
-  const normalized = prompt.toLowerCase();
+export function extractAlarmTimeFromPrompt(prompt: string): string | null {
+  const normalized = normalizeAlarmTimePhrase(prompt);
+  const dayHint =
+    normalized.match(/\b(tomorrow|today|tonight|next morning|this morning|this evening)\b/)?.[1] ?? "";
+
   const duration = normalized.match(/\b(?:in\s+)?(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b/);
   if (duration) {
-    return `in ${duration[1]} ${duration[2]}`;
+    const base = `in ${duration[1]} ${duration[2]}`;
+    return dayHint ? `${base} ${dayHint}` : base;
   }
-  const atTime = normalized.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+
+  const atTime = normalized.match(/\b(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
   if (atTime) {
-    return `${atTime[1]}:${atTime[2] ?? "00"} ${atTime[3]}`;
+    const base = `${atTime[1]}:${atTime[2] ?? "00"} ${atTime[3]}`;
+    return dayHint ? `${base} ${dayHint}` : base;
   }
-  const twentyFour = normalized.match(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/);
+
+  const bareTime = normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (bareTime) {
+    const base = `${bareTime[1]}:${bareTime[2] ?? "00"} ${bareTime[3]}`;
+    return dayHint ? `${base} ${dayHint}` : base;
+  }
+
+  const spokenTime = extractSpokenClockTime(normalized);
+  if (spokenTime) {
+    return dayHint ? `${spokenTime} ${dayHint}` : spokenTime;
+  }
+
+  const compactTime = normalized.match(/\b(?:at|for|said)\s+(\d{3,4})\s*(am|pm)?\b/);
+  if (compactTime) {
+    const digits = compactTime[1] ?? "";
+    const hourDigits = digits.length === 3 ? digits.slice(0, 1) : digits.slice(0, 2);
+    const minuteDigits = digits.slice(-2);
+    const base = `${Number(hourDigits)}:${minuteDigits}${compactTime[2] ? ` ${compactTime[2]}` : ""}`;
+    return dayHint ? `${base} ${dayHint}` : base;
+  }
+
+  const twentyFour = normalized.match(/\b(?:at|for)\s+(\d{1,2}):(\d{2})\b/);
   if (twentyFour) {
-    return `${twentyFour[1]}:${twentyFour[2]}`;
+    const base = `${twentyFour[1]}:${twentyFour[2]}`;
+    return dayHint ? `${base} ${dayHint}` : base;
   }
+
   return null;
+}
+
+function extractSpokenClockTime(normalized: string): string | null {
+  const words = [
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve"
+  ];
+  const pattern = new RegExp(
+    `\\b(?:at|for|said)\\s+(${words.join("|")})\\s+((?:oh\\s+)?(?:zero|${words.join("|")}|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:\\s+(?:one|two|three|four|five|six|seven|eight|nine))?)\\s*(am|pm)?\\b`
+  );
+  const match = normalized.match(pattern);
+  if (!match) {
+    return null;
+  }
+  const hour = numberWordValue(match[1] ?? "");
+  const minute = minuteWordsValue(match[2] ?? "");
+  if (!hour || minute === null) {
+    return null;
+  }
+  const minuteText = String(minute).padStart(2, "0");
+  return `${hour}:${minuteText}${match[3] ? ` ${match[3]}` : ""}`;
+}
+
+function numberWordValue(word: string): number | null {
+  const values: Record<string, number> = {
+    zero: 0,
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+    thirty: 30,
+    forty: 40,
+    fifty: 50
+  };
+  return values[word] ?? null;
+}
+
+function minuteWordsValue(value: string): number | null {
+  const parts = value.replace(/^oh\s+/, "zero ").split(/\s+/).filter(Boolean);
+  if (!parts.length) {
+    return null;
+  }
+  if (parts.length === 1) {
+    return numberWordValue(parts[0] ?? "");
+  }
+  if (parts[0] === "zero") {
+    return numberWordValue(parts[1] ?? "");
+  }
+  const tens = numberWordValue(parts[0] ?? "");
+  const ones = numberWordValue(parts[1] ?? "");
+  if (tens === null || ones === null) {
+    return null;
+  }
+  return tens + ones;
+}
+
+/** When the model claims it set an alarm without calling a tool, recover and run it. */
+export function tryRecoverAlarmClaim(
+  text: string,
+  prompt: string,
+  recentUserText?: string | null
+): LocalToolInvocation | null {
+  const trimmed = String(text ?? "").trim();
+  if (
+    !/\b(i(?:'ve|\s+have|\s+will)?\s+(?:just\s+)?(?:set|scheduled|created)|i set|i will set)\b.*\balarm\b/i.test(
+      trimmed
+    ) &&
+    !/\balarm\s+for\b/i.test(trimmed)
+  ) {
+    return null;
+  }
+  const time =
+    extractAlarmTimeFromPrompt(prompt) ??
+    extractAlarmTimeFromPrompt(trimmed) ??
+    (recentUserText ? extractAlarmTimeFromPrompt(recentUserText) : null);
+  if (!time) {
+    return null;
+  }
+  return { name: "alarm", args: { action: "set", time, label: "Alarm" } };
 }
 
 function looksLikeWebsiteName(value: string): boolean {

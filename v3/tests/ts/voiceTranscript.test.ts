@@ -29,6 +29,16 @@ describe("normalizeVoiceTranscript", () => {
     expect(normalizeVoiceTranscript("What's the weather?")).toBe("What's the weather?");
     expect(normalizeVoiceTranscript("Tell me about storms")).toBe("Tell me about storms");
   });
+
+  it("fixes signal alarm STT mishears", () => {
+    expect(normalizeVoiceTranscript("Signal alarm for 4 a.m.")).toBe("set an alarm for 4 a.m.");
+  });
+
+  it("fixes live alarm STT mishears", () => {
+    expect(normalizeVoiceTranscript("A sudden alarm for 5 a.m.")).toBe("set an alarm for 5 a.m.");
+    expect(normalizeVoiceTranscript("Set in alarm for 5 A.M.")).toBe("set an alarm for 5 A.M.");
+    expect(normalizeVoiceTranscript("sat in an alarm for 5 a.m.")).toBe("set an alarm for 5 a.m.");
+  });
 });
 
 describe("cleanAppTarget", () => {

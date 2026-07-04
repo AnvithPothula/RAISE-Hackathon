@@ -19,7 +19,7 @@ import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import { McpManager } from "./mcpManager.js";
 import { createFilesystemAccess } from "./filesystemAccess.js";
-import { routeUserIntent } from "./intentRouter.js";
+import { routeUserIntent, tryRecoverAlarmClaim, type IntentRoutingContext } from "./intentRouter.js";
 import {
   extractUserLocation,
   isOpenAppFailure,
@@ -489,7 +489,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
 
   try {
     debug(`echo gemma response starting device=${context.deviceId} promptChars=${prompt.length}`);
-    const routing = routeUserIntent(prompt, { knownLocation });
+    const routing = routeUserIntent(prompt, buildRoutingContext());
     emitDebugEvent("gemma request", {
       turnId,
       source: "echo",
@@ -557,7 +557,8 @@ async function tryExecuteTextualToolResponse(
 ): Promise<string | null> {
   const invocation =
     tryParseTextualToolCall(text) ??
-    (context.prompt ? tryRecoverOpenedClaim(text, context.prompt) : null);
+    (context.prompt ? tryRecoverOpenedClaim(text, context.prompt) : null) ??
+    (context.prompt ? tryRecoverAlarmClaim(text, context.prompt, recentUserText()) : null);
   if (!invocation) {
     return null;
   }
@@ -610,18 +611,14 @@ async function tryExecuteTextualToolResponse(
 }
 
 async function runDirectLocalTool(prompt: string, context: { turnId: number; source: PromptSource }): Promise<string | null> {
-  const routing = routeUserIntent(prompt, {
-    previousToolName: lastRetryableTool?.name ?? null,
-    knownLocation
-  });
-  const invocations = resolveDirectLocalTools(prompt, {
-    previousToolName: lastRetryableTool?.name ?? null,
-    knownLocation
-  });
+  const routingContext = buildRoutingContext();
+  const routing = routeUserIntent(prompt, routingContext);
+  const invocations = resolveDirectLocalTools(prompt, routingContext);
   const contextualInvocation = resolveContextualLocalTool(
     prompt,
     lastRetryableTool?.name ?? null,
-    knownLocation
+    knownLocation,
+    routingContext.recentUserText
   );
   const toolsToRun = invocations.length ? invocations : contextualInvocation ? [contextualInvocation] : [];
   const route =
@@ -818,7 +815,7 @@ async function respondDirect(prompt: string, turnId = activeTurnId): Promise<voi
   clearPendingPiFallbacks();
   try {
     debug(`gemma response starting promptChars=${prompt.length}`);
-    const routing = routeUserIntent(prompt, { knownLocation });
+    const routing = routeUserIntent(prompt, buildRoutingContext());
     emitDebugEvent("gemma request", {
       turnId,
       source: "typed",
@@ -878,7 +875,7 @@ async function respondWithFallback(prompt: string | null, reason: string): Promi
 
   try {
     debug(`gemma response starting reason="${reason}" promptChars=${prompt.length}`);
-    const routing = routeUserIntent(prompt, { knownLocation });
+    const routing = routeUserIntent(prompt, buildRoutingContext());
     emitDebugEvent("gemma fallback request", {
       source: "fallback",
       model: resolveActiveModel(config),
@@ -928,6 +925,22 @@ function rememberTurn(role: "user" | "assistant", text: string): void {
 
 function getRecentHistory(): Array<{ role: "user" | "assistant"; text: string }> {
   return conversationHistory.slice(-10);
+}
+
+function recentUserText(): string {
+  return getRecentHistory()
+    .filter((turn) => turn.role === "user")
+    .slice(-5)
+    .map((turn) => turn.text)
+    .join(" ");
+}
+
+function buildRoutingContext(): IntentRoutingContext {
+  return {
+    knownLocation,
+    previousToolName: lastRetryableTool?.name ?? null,
+    recentUserText: recentUserText()
+  };
 }
 
 function broadcastLocalToolEvent(
@@ -991,6 +1004,7 @@ function isRetryableToolName(name: string): name is LocalToolName {
     "web_search",
     "screen",
     "memory",
+    "calendar",
     "spotify"
   ].includes(name);
 }

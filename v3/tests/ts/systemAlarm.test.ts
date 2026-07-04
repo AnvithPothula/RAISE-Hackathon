@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   alarmTimeParts,
   buildMacAlarmScript,
+  buildMacCalendarEventScript,
   buildWindowsAlarmScript,
   openSystemClockApp,
   resolveClockAppTarget,
   setSystemClockAlarm,
+  setSystemCalendarEvent,
   type SystemAlarmServices
 } from "../../src/main/systemAlarm.js";
 
@@ -31,13 +33,23 @@ describe("systemAlarm", () => {
     expect(script).toContain("AddAlarmAsync");
   });
 
-  it("builds a Mac Clock AppleScript with the alarm label and time", () => {
+  it("builds a Mac Calendar AppleScript sound alarm", () => {
     const dueAt = new Date(2026, 6, 4, 6, 45, 0).getTime();
     const script = buildMacAlarmScript(dueAt, 'Morning "standup"');
-    expect(script).toContain('tell application "Clock" to activate');
-    expect(script).toContain('label:"Morning \\"standup\\""');
-    expect(script).toContain("set hours of alarmTime to 6");
-    expect(script).toContain("set minutes of alarmTime to 45");
+    expect(script).toContain('tell application "Calendar"');
+    expect(script).toContain('summary:"Morning \\"standup\\""');
+    expect(script).toContain("make new sound alarm");
+    expect(script).toContain("trigger interval:0");
+    expect(script).not.toContain("make new alarm");
+  });
+
+  it("builds a Mac Calendar AppleScript all-day event", () => {
+    const startAt = new Date(2026, 9, 30, 0, 0, 0).getTime();
+    const script = buildMacCalendarEventScript({ title: 'Vedans "birthday"', startAt, allDay: true });
+    expect(script).toContain('tell application "Calendar"');
+    expect(script).toContain('summary:"Vedans \\"birthday\\""');
+    expect(script).toContain("allday event:true");
+    expect(script).toContain('return "OK:CALENDAR_EVENT"');
   });
 
   it("opens the native Clock app through the injected launcher", async () => {
@@ -69,10 +81,10 @@ describe("systemAlarm", () => {
     expect(result.detail).toContain("Windows Clock");
   });
 
-  it("registers a Mac system alarm when AppleScript succeeds", async () => {
+  it("registers a Mac Calendar sound alarm when AppleScript succeeds", async () => {
     if (process.platform !== "darwin") {
       const dueAt = new Date(2026, 6, 4, 8, 0, 0).getTime();
-      expect(buildMacAlarmScript(dueAt, "Wake up")).toContain('make new alarm');
+      expect(buildMacAlarmScript(dueAt, "Wake up")).toContain('tell application "Clock"');
       return;
     }
 
@@ -81,15 +93,15 @@ describe("systemAlarm", () => {
       runCommand: async (command, args) => {
         expect(command).toBe("osascript");
         expect(args[0]).toBe("-e");
-        expect(args[1]).toContain('tell application "Clock"');
-        return { code: 0, stdout: "OK:SYSTEM", stderr: "" };
+        expect(args[1]).toContain('tell application "Calendar"');
+        return { code: 0, stdout: "OK:CALENDAR", stderr: "" };
       }
     };
 
     const result = await setSystemClockAlarm({ dueAt: Date.now() + 60_000, label: "Test" }, services);
     expect(result.clockOpened).toBe(true);
     expect(result.systemAlarmSet).toBe(true);
-    expect(result.detail).toContain("Mac Clock");
+    expect(result.detail).toContain("Calendar sound alarm");
   });
 
   it("still opens Clock when the system alarm script fails", async () => {
@@ -102,5 +114,28 @@ describe("systemAlarm", () => {
     expect(result.clockOpened).toBe(true);
     expect(result.systemAlarmSet).toBe(false);
     expect(result.detail.toLowerCase()).toContain("not saved");
+  });
+
+  it("creates a Mac Calendar event when AppleScript succeeds", async () => {
+    if (process.platform !== "darwin") {
+      const startAt = new Date(2026, 9, 30, 0, 0, 0).getTime();
+      expect(buildMacCalendarEventScript({ title: "Birthday", startAt, allDay: true })).toContain("make new event");
+      return;
+    }
+
+    const services: SystemAlarmServices = {
+      runCommand: async (command, args) => {
+        expect(command).toBe("osascript");
+        expect(args[1]).toContain("make new event");
+        return { code: 0, stdout: "OK:CALENDAR_EVENT", stderr: "" };
+      }
+    };
+
+    const result = await setSystemCalendarEvent(
+      { title: "Birthday", startAt: Date.now() + 60_000, allDay: true },
+      services
+    );
+    expect(result.eventCreated).toBe(true);
+    expect(result.detail).toContain("Calendar");
   });
 });

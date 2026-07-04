@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import type { AppConfig, ModelStats, ThinkMode } from "../shared/types.js";
 import { orderModelCandidates, resolveVariantModel, type HostInfo } from "../shared/modelVariant.js";
+import { currentDateTimeContext } from "./dateContext.js";
+import { listActiveAlarmsSummary } from "./localTools.js";
 import { isToolAllowedForScope, multiPartAnswerNudge, promptNeedsMultiToolLoop, resolveOpenAppIntent, routeUserIntent } from "./intentRouter.js";
 import { runNamedLocalTool } from "./localTools.js";
 import {
@@ -322,7 +324,7 @@ async function runToolCall(call: ToolFunctionCall, config: AppConfig, context: T
 // sub-agent calls are stripped so it cannot recurse.
 async function runLocalSubAgent(task: string, config: AppConfig, context: ToolContext): Promise<string> {
   const messages: OllamaMessage[] = [
-    { role: "system", content: readSystemPrompt(context.mcp) },
+    { role: "system", content: `${readSystemPrompt(context.mcp)}\n\n${currentDateTimeContext()}\n\n${listActiveAlarmsSummary()}` },
     { role: "user", content: `Task: ${task}` }
   ];
   const tools = buildTools(context).filter((tool) => !isLoopToolName((tool.function as { name?: string }).name));
@@ -380,7 +382,7 @@ async function runDeepResearch(task: string, config: AppConfig, context: ToolCon
   });
 
   const researchSystem =
-    `${readSystemPrompt(context.mcp)}\n\n` +
+    `${readSystemPrompt(context.mcp)}\n\n${currentDateTimeContext()}\n\n` +
     "You are in deep research / iteration mode. " +
     `You have committed to a budget of ${rounds} rounds for this task${plan ? ` (plan: ${plan})` : ""}. ` +
     "Each round, call whatever tools you need — web_search with focused queries, run_code for computation, " +
@@ -789,7 +791,12 @@ function buildTools(context: ToolContext): OllamaTool[] {
 
 function buildMessages(prompt: string, context: ToolContext): OllamaMessage[] {
   const scope = context.toolScope ?? "full";
-  const messages: OllamaMessage[] = [{ role: "system", content: readSystemPrompt(context.mcp, scope) }];
+  const messages: OllamaMessage[] = [
+    {
+      role: "system",
+      content: `${readSystemPrompt(context.mcp, scope)}\n\n${currentDateTimeContext()}\n\n${listActiveAlarmsSummary()}`
+    }
+  ];
 
   if (context.history?.length) {
     for (const turn of context.history.slice(-10)) {

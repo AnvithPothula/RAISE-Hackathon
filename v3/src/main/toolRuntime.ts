@@ -108,7 +108,7 @@ export const FUNCTION_DECLARATIONS = [
   {
     name: "set_manage_alarm",
     description:
-      "Set, list, or cancel alarms. Opens the native Clock app on Mac and Windows and registers a matching system alarm when possible. Also keeps a local Pythos alarm as backup.",
+      "Handle alarm requests by creating timed Calendar events. Pythos cannot create native Clock alarms and should not claim it can.",
     parameters: {
       type: "object",
       properties: {
@@ -121,6 +121,19 @@ export const FUNCTION_DECLARATIONS = [
         id: { type: "string", description: "Alarm id to cancel." }
       },
       required: ["action"]
+    }
+  },
+  {
+    name: "create_calendar_event",
+    description:
+      "Create a Calendar event for a dated item, such as birthdays, meetings, appointments, deadlines, or reminders with a specific date. Use this instead of memory when the user says add, schedule, create, or put something on a date.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Calendar event title, for example 'Vedans birthday'." },
+        date: { type: "string", description: "Date phrase, for example 'October 30th', 'tomorrow', or '10/30/2026'." }
+      },
+      required: ["title", "date"]
     }
   },
   {
@@ -364,6 +377,7 @@ function isDeclarationAllowed(name: string, toolScope: LlmToolScope): boolean {
     "open_website",
     "web_search",
     "control_spotify",
+    "create_calendar_event",
     "update_user_memory"
   ]);
   const heavy = new Set([
@@ -483,6 +497,9 @@ function normalizeToolName(name: string | undefined): LocalToolName | null {
   }
   if (name === "set_manage_alarm") {
     return "alarm";
+  }
+  if (name === "create_calendar_event") {
+    return "calendar";
   }
   if (name === "open_app") {
     return "open_app";

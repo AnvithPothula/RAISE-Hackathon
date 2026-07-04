@@ -152,7 +152,40 @@ describe("runNamedLocalTool", () => {
 
     expect(result.query).toBe("pythos");
     expect(result.fetchedAt).toBe("fetched-fixture");
-    expect(result.text).toContain("https://example.com");
+    expect(result.text).toContain("Result for pythos (example.com)");
+    expect(result.text).not.toContain("https://example.com");
+    expect(result.text).not.toContain("fetched-fixture");
+  });
+
+  it("keeps ambiguous who-is search results concise", async () => {
+    const result = await runNamedLocalTool("web_search", { query: "who is Vedansh Karnatha" }, null, {
+      webSearch: async () => ({
+        fetchedAt: "fetched-fixture",
+        results: [
+          {
+            title: "Vedansh D. - Bengaluru, Karnataka, India - LinkedIn",
+            url: "https://in.linkedin.com/in/vedansh-dwivedi",
+            snippet: "Location: Bengaluru. 500+ connections on LinkedIn."
+          },
+          {
+            title: "Vedansh Garg - CTO & AI Engineer",
+            url: "https://in.linkedin.com/in/vedanshgarg",
+            snippet: "Vedansh Garg CTO & AI Engineer in Bengaluru, Karnataka, India."
+          },
+          {
+            title: "Vedansh hails from Kundapura",
+            url: "https://www.facebook.com/example",
+            snippet: "Vedansh hails from Kundapura, a coastal town in Karnataka."
+          }
+        ]
+      })
+    });
+
+    expect(result.text).toContain("possible matches");
+    expect(result.text).toContain("nothing clearly identifying Vedansh Karnatha");
+    expect(result.text.length).toBeLessThan(260);
+    expect(result.text).not.toContain("Source:");
+    expect(result.text).not.toContain("https://");
   });
 
   it("uses injected geocode and forecast services for weather", async () => {
@@ -181,26 +214,160 @@ describe("runNamedLocalTool", () => {
     expect(result.text).toContain("72 degrees Fahrenheit");
   });
 
-  it("uses injected clock and timer services for alarms", async () => {
-    let scheduledDelay = -1;
-    const fakeTimer = {} as ReturnType<typeof setTimeout>;
+  it("adds dated items to Calendar", async () => {
+    const now = Date.parse("2026-07-04T16:22:00-05:00");
+    let eventTitle = "";
+    let eventStartAt = 0;
+
+    const result = await runNamedLocalTool(
+      "calendar",
+      { action: "add", title: "Vedans' birthday", date: "October 30th" },
+      null,
+      {
+        now: () => now,
+        setCalendarEvent: async ({ title, startAt, allDay }) => {
+          eventTitle = title;
+          eventStartAt = startAt;
+          return { calendarOpened: true, eventCreated: allDay === true, detail: "Added it to Calendar." };
+        }
+      }
+    );
+
+    const date = new Date(eventStartAt);
+    expect(eventTitle).toBe("Vedans' birthday");
+    expect(date.getFullYear()).toBe(2026);
+    expect(date.getMonth()).toBe(9);
+    expect(date.getDate()).toBe(30);
+    expect(result.text).toContain("Opened Calendar");
+    expect(result.text).toContain("Added Vedans' birthday to Calendar");
+  });
+
+  it("adds weekday items to the next matching Calendar date", async () => {
+    const now = Date.parse("2026-07-04T16:22:00-05:00");
+    let eventStartAt = 0;
+
+    await runNamedLocalTool("calendar", { action: "add", title: "Vidanci's birthday", date: "Wednesday" }, null, {
+      now: () => now,
+      setCalendarEvent: async ({ startAt }) => {
+        eventStartAt = startAt;
+        return { calendarOpened: true, eventCreated: true, detail: "Added it to Calendar." };
+      }
+    });
+
+    const date = new Date(eventStartAt);
+    expect(date.getFullYear()).toBe(2026);
+    expect(date.getMonth()).toBe(6);
+    expect(date.getDate()).toBe(8);
+  });
+
+  it("lists morning Calendar events", async () => {
+    const now = Date.parse("2026-07-04T16:22:00-05:00");
+    let queriedStartAt = 0;
+    let queriedEndAt = 0;
+
+    const result = await runNamedLocalTool("calendar", { action: "list", date: "Wednesday", period: "morning" }, null, {
+      now: () => now,
+      listCalendarEvents: async ({ startAt, endAt }) => {
+        queriedStartAt = startAt;
+        queriedEndAt = endAt;
+        return {
+          calendarOpened: true,
+          detail: "Read Calendar events.",
+          events: [{ title: "Vidanci's birthday", startAt: Date.parse("2026-07-08T09:00:00-05:00"), allDay: false }]
+        };
+      }
+    });
+
+    const start = new Date(queriedStartAt);
+    const end = new Date(queriedEndAt);
+    expect(start.getDate()).toBe(8);
+    expect(start.getHours()).toBe(5);
+    expect(end.getHours()).toBe(12);
+    expect(result.text).toContain("Vidanci's birthday");
+    expect(result.text).toContain("9:00 AM");
+  });
+
+  it("adds alarm requests as timed Calendar events", async () => {
+    let calendarTitle = "";
+    let calendarStartAt = 0;
 
     const result = await runNamedLocalTool("alarm", { action: "set", time: "in 5 minutes", label: "test" }, null, {
       now: () => 1_000,
-      setTimeout: (_callback, delayMs) => {
-        scheduledDelay = delayMs;
-        return fakeTimer;
+      setTimeout: () => {
+        throw new Error("should not schedule a Pythos timer");
       },
-      setSystemClockAlarm: async () => ({
-        clockOpened: true,
-        systemAlarmSet: true,
-        detail: "Added the alarm to the Mac Clock app."
-      })
+      setCalendarEvent: async ({ title, startAt, allDay }) => {
+        calendarTitle = title;
+        calendarStartAt = startAt;
+        return {
+          calendarOpened: true,
+          eventCreated: allDay === false,
+          detail: "Added it to Calendar."
+        };
+      }
     });
 
-    expect(scheduledDelay).toBe(300_000);
-    expect(result.text).toContain("Set alarm alarm-rs");
-    expect(result.text).toContain("Mac Clock app");
+    expect(calendarTitle).toBe("test");
+    expect(calendarStartAt).toBe(301_000);
+    expect(result.text).toContain("Opened Calendar");
+    expect(result.text).toContain("Added test to Calendar");
+    expect(result.text).not.toContain("Clock");
+    expect(result.text).not.toContain("notification");
+  });
+
+  it("schedules tomorrow alarms from dotted a m phrases", async () => {
+    const now = Date.parse("2026-07-04T16:22:00-05:00");
+    let calendarStartAt = 0;
+
+    await runNamedLocalTool("alarm", { action: "set", time: "5:00 am tomorrow", label: "Wake up" }, null, {
+      now: () => now,
+      setTimeout: () => {
+        throw new Error("should not schedule a Pythos timer");
+      },
+      setCalendarEvent: async ({ startAt }) => {
+        calendarStartAt = startAt;
+        return { calendarOpened: true, eventCreated: true, detail: "Added it to Calendar." };
+      }
+    });
+
+    const due = new Date(calendarStartAt);
+    expect(due.getDate()).toBe(5);
+    expect(due.getHours()).toBe(5);
+    expect(due.getMinutes()).toBe(0);
+  });
+
+  it("schedules no-meridiem clock times for the next matching time", async () => {
+    const now = Date.parse("2026-07-04T16:47:00-05:00");
+    let calendarStartAt = 0;
+
+    await runNamedLocalTool("alarm", { action: "set", time: "4:48", label: "Wake up" }, null, {
+      now: () => now,
+      setTimeout: () => {
+        throw new Error("should not schedule a Pythos timer");
+      },
+      setCalendarEvent: async ({ startAt }) => {
+        calendarStartAt = startAt;
+        return { calendarOpened: true, eventCreated: true, detail: "Added it to Calendar." };
+      }
+    });
+
+    const due = new Date(calendarStartAt);
+    expect(due.getDate()).toBe(4);
+    expect(due.getHours()).toBe(16);
+    expect(due.getMinutes()).toBe(48);
+  });
+
+  it("rejects explicitly past today alarms instead of firing immediately", async () => {
+    const now = Date.parse("2026-07-04T16:47:00-05:00");
+
+    await expect(
+      runNamedLocalTool("alarm", { action: "set", time: "5:00 am today", label: "Wake up" }, null, {
+        now: () => now,
+        setTimeout: () => {
+          throw new Error("should not schedule");
+        }
+      })
+    ).rejects.toThrow("already passed today");
   });
 
   it("uses injected user memory service", async () => {

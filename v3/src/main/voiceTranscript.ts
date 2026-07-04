@@ -26,6 +26,15 @@ const OPEN_FOLDER_PHRASE_FIXES: Array<[RegExp, string]> = [
   [/\b(documents|downloads|desktop|pictures|photos|music|movies)\s+further\b/gi, "$1 folder"]
 ];
 
+/** Alarm command mishearings (Gradium often garbles "set an alarm"). */
+const ALARM_PHRASE_FIXES: Array<[RegExp, string]> = [
+  [/\bsignal\s+(?:an?\s+)?alarm\b/gi, "set an alarm"],
+  [/\b(?:a\s+)?sudden\s+(?:an?\s+)?alarm\b/gi, "set an alarm"],
+  [/\bset\s+in\s+(?:an?\s+)?alarm\b/gi, "set an alarm"],
+  [/\bs(?:at|et)\s+in\s+(?:an?\s+)?alarm\b/gi, "set an alarm"],
+  [/\bthat\s+in\s+alarm\b/gi, "set an alarm"]
+];
+
 function stripTrailingPunctuation(value: string): string {
   return value.replace(/[.!?]+$/g, "").trim();
 }
@@ -77,6 +86,10 @@ export function normalizeVoiceTranscript(text: string): string {
 
   normalized = splitGluedOpenVerbs(normalized);
   normalized = expandOpenFragments(normalized);
+
+  for (const [pattern, replacement] of ALARM_PHRASE_FIXES) {
+    normalized = normalized.replace(pattern, replacement);
+  }
 
   if (OPEN_VERB.test(normalized) || /\b(?:open|launch|start|pull up|bring up|fire up|openup)\b/i.test(normalized)) {
     for (const [pattern, replacement] of OPEN_FOLDER_PHRASE_FIXES) {

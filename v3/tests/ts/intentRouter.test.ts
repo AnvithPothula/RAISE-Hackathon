@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { collectInstantInvocations, multiPartAnswerNudge, routeUserIntent } from "../../src/main/intentRouter.js";
+import {
+  collectInstantInvocations,
+  multiPartAnswerNudge,
+  routeUserIntent,
+  tryRecoverAlarmClaim
+} from "../../src/main/intentRouter.js";
 import { buildFunctionDeclarations } from "../../src/main/toolRuntime.js";
 
 describe("routeUserIntent", () => {
@@ -27,6 +32,45 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({
       name: "memory",
       args: { action: "add", text: "my girlfriend's birthday is March 3rd" }
+    });
+  });
+
+  it("routes dated add requests to Calendar instead of memory", () => {
+    const decision = routeUserIntent("Ad Vedans' birthday on October 30th.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "calendar",
+      args: { action: "add", title: "Vedans' birthday", date: "October 30th" }
+    });
+  });
+
+  it("routes weekday dated add requests to Calendar", () => {
+    const decision = routeUserIntent("Add Vidanci's birthday on Wednesday.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "calendar",
+      args: { action: "add", title: "Vidanci's birthday", date: "Wednesday" }
+    });
+  });
+
+  it("routes calendar schedule questions to Calendar list", () => {
+    const decision = routeUserIntent("What do I have in the morning on Wednesday?");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "calendar",
+      args: { action: "list", date: "Wednesday", period: "morning" }
+    });
+  });
+
+  it("uses date-only followups for the previous calendar title", () => {
+    const decision = routeUserIntent("July 8th.", {
+      previousToolName: "calendar",
+      recentUserText: "Add Vidanci's birthday on Wednesday."
+    });
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "calendar",
+      args: { action: "add", title: "Vidanci's birthday", date: "July 8th" }
     });
   });
 
@@ -138,6 +182,91 @@ describe("routeUserIntent", () => {
       args: { action: "set", time: "7:30 am", label: "Alarm" }
     });
   });
+
+  it("routes tomorrow alarms with dotted a m instantly", () => {
+    const decision = routeUserIntent("Set an alarm for 5 A.M. tomorrow");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am tomorrow", label: "Alarm" }
+    });
+  });
+
+  it("routes clock-and-alarm requests directly instead of through the model", () => {
+    const decision = routeUserIntent("Open up the clock app and set an alarm for 5am.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am", label: "Alarm" }
+    });
+  });
+
+  it("routes terse open-and-alarm phrasing directly", () => {
+    const decision = routeUserIntent("chat. Open and alarm for 5 a.m.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am", label: "Alarm" }
+    });
+  });
+
+  it("parses compact spoken alarm times", () => {
+    const decision = routeUserIntent("Threaten alarm for 448.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "4:48", label: "Alarm" }
+    });
+  });
+
+  it("routes alarm time corrections from spoken words", () => {
+    const decision = routeUserIntent("I said four forty eight. P.M. Today.", {
+      previousToolName: "alarm"
+    });
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "4:48 pm today", label: "Alarm" }
+    });
+  });
+
+  it("routes alarm status questions to the alarm list tool", () => {
+    const decision = routeUserIntent("dog, I don't have any alarm set right now.");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({ name: "alarm", args: { action: "list" } });
+  });
+
+  it("treats create-alarm complaints as set requests when recent text has the time", () => {
+    const decision = routeUserIntent("Actually create an alarm. You haven't created an alarm yet.", {
+      previousToolName: "alarm",
+      recentUserText: "sat in an alarm for 5 a.m."
+    });
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am", label: "Alarm" }
+    });
+  });
+
+  it("recovers terse lock-in alarm followups from recent text", () => {
+    const decision = routeUserIntent("No, you haven't, bruh. Lock in.", {
+      previousToolName: "alarm",
+      recentUserText: "set an alarm for 5 a.m."
+    });
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am", label: "Alarm" }
+    });
+  });
+
+  it("recovers model alarm claims into a real alarm tool call", () => {
+    expect(tryRecoverAlarmClaim("I set an alarm for 5:00 AM tomorrow.", "create an alarm")).toEqual({
+      name: "alarm",
+      args: { action: "set", time: "5:00 am tomorrow", label: "Alarm" }
+    });
+  });
+
   it("uses full tools for research prompts", () => {
     const decision = routeUserIntent("research and compare the best laptops under 1500 dollars");
     expect(decision.difficulty).toBe("complex");

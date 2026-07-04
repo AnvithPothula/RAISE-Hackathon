@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeAlarmTimePhrase } from "./dateContext.js";
 import {
   collectInstantInvocations,
   promptNeedsMultiToolLoop,
@@ -15,7 +16,14 @@ import { normalizeMathExpression } from "./mathExpression.js";
 export { extractLocationFromPrompt, cleanLocation } from "./locationUtils.js";
 import { cleanAppTarget, normalizeVoiceTranscript } from "./voiceTranscript.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
-import { setSystemClockAlarm, type SystemAlarmRequest, type SystemAlarmResult } from "./systemAlarm.js";
+import {
+  listSystemCalendarEvents,
+  setSystemCalendarEvent,
+  type SystemCalendarEventRequest,
+  type SystemCalendarEventResult,
+  type SystemCalendarListRequest,
+  type SystemCalendarListResult
+} from "./systemAlarm.js";
 import type { UserMemoryService } from "./userMemory.js";
 
 export type LocalToolResult = {
@@ -34,6 +42,7 @@ export type LocalToolResult = {
     | "run_code"
     | "cursor_agent"
     | "memory"
+    | "calendar"
     | "capabilities"
     | "clipboard"
     | "list_folder"
@@ -69,7 +78,6 @@ export type LocalToolServices = {
   openWebsite?: (url: string) => Promise<void>;
   filesystemAccess?: FilesystemAccess;
   onAlarm?: (alarm: AlarmItem) => void;
-  setSystemClockAlarm?: (request: SystemAlarmRequest) => Promise<SystemAlarmResult>;
   fetch?: FetchService;
   geocode?: GeocodeService;
   forecast?: ForecastService;
@@ -78,6 +86,8 @@ export type LocalToolServices = {
   setTimeout?: (callback: () => void, delayMs: number) => TimerHandle;
   clearTimeout?: (timeout: TimerHandle) => void;
   userMemory?: UserMemoryService;
+  setCalendarEvent?: (request: SystemCalendarEventRequest) => Promise<SystemCalendarEventResult>;
+  listCalendarEvents?: (request: SystemCalendarListRequest) => Promise<SystemCalendarListResult>;
   runSkillScript?: SkillScriptRunner;
   spotify?: SpotifyToolConfig;
 };
@@ -95,6 +105,9 @@ export type LocalToolArgs = {
   path?: string | null;
   task?: string | null;
   text?: string | null;
+  title?: string | null;
+  date?: string | null;
+  period?: string | null;
   category?: string | null;
   source?: string | null;
   kind?: string | null;
@@ -343,7 +356,7 @@ export async function runLocalTool(
 
 export function resolveDirectLocalTools(
   prompt: string,
-  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null; recentUserText?: string | null } = {}
 ): LocalToolInvocation[] {
   const compound = collectInstantInvocations(prompt, context).map(normalizeOpenAppInvocation);
   if (compound.length >= 2) {
@@ -369,7 +382,7 @@ export function resolveDirectLocalTools(
 
 export function resolveDirectLocalTool(
   prompt: string,
-  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null } = {}
+  context: { previousToolName?: LocalToolName | null; knownLocation?: string | null; recentUserText?: string | null } = {}
 ): LocalToolInvocation | null {
   const invocations = resolveDirectLocalTools(prompt, context);
   return invocations[0] ?? null;
@@ -389,9 +402,10 @@ function normalizeOpenAppInvocation(invocation: LocalToolInvocation): LocalToolI
 export function resolveContextualLocalTool(
   prompt: string,
   previousToolName: LocalToolName | null | undefined,
-  knownLocation?: string | null
+  knownLocation?: string | null,
+  recentUserText?: string | null
 ): LocalToolInvocation | null {
-  const contextual = resolveContextualFromRouter(prompt, previousToolName, knownLocation);
+  const contextual = resolveContextualFromRouter(prompt, previousToolName, knownLocation, recentUserText);
   if (contextual) {
     return contextual;
   }
@@ -454,6 +468,10 @@ export async function runNamedLocalTool(
 
   if (name === "memory") {
     return manageUserMemory(args, services);
+  }
+
+  if (name === "calendar") {
+    return addCalendarEvent(args, services);
   }
 
   if (name === "spotify") {
@@ -520,6 +538,60 @@ function manageUserMemory(args: LocalToolArgs, services: LocalToolServices): Loc
   return {
     name: "memory",
     text: `Remembered ${item.category}: ${item.text}`
+  };
+}
+
+async function addCalendarEvent(args: LocalToolArgs, services: LocalToolServices): Promise<LocalToolResult> {
+  const action = String(args.action ?? "add").toLowerCase();
+  if (action === "list" || action === "show" || action === "query") {
+    return listCalendarEvents(args, services);
+  }
+
+  const title = String(args.title ?? args.text ?? "").trim();
+  const dateText = String(args.date ?? args.time ?? "").trim();
+  if (!title) {
+    throw new Error("Missing calendar event title.");
+  }
+  if (!dateText) {
+    throw new Error("Missing calendar event date.");
+  }
+
+  const startAt = parseCalendarDate(dateText, services.now?.() ?? Date.now());
+  const setCalendarEvent = services.setCalendarEvent ?? setSystemCalendarEvent;
+  const result = await setCalendarEvent({ title, startAt, allDay: true });
+  if (!result.eventCreated) {
+    throw new Error(result.detail || "Calendar event was not created.");
+  }
+
+  return {
+    name: "calendar",
+    text: `${result.calendarOpened ? "Opened Calendar. " : ""}Added ${title} to Calendar for ${formatCalendarDate(startAt)}.`
+  };
+}
+
+async function listCalendarEvents(args: LocalToolArgs, services: LocalToolServices): Promise<LocalToolResult> {
+  const dateText = String(args.date ?? args.time ?? "").trim();
+  if (!dateText) {
+    throw new Error("Missing calendar query date.");
+  }
+  const now = services.now?.() ?? Date.now();
+  const dayStart = parseCalendarDate(dateText, now);
+  const period = String(args.period ?? "").toLowerCase();
+  const startAt = period === "morning" ? dayStart + 5 * 3_600_000 : dayStart;
+  const endAt = period === "morning" ? dayStart + 12 * 3_600_000 : dayStart + 24 * 3_600_000;
+  const listCalendarEvents = services.listCalendarEvents ?? listSystemCalendarEvents;
+  const result = await listCalendarEvents({ startAt, endAt });
+
+  if (!result.events.length) {
+    return { name: "calendar", text: `Nothing on Calendar ${period ? `in the ${period} ` : ""}for ${formatCalendarDate(dayStart)}.` };
+  }
+
+  const events = result.events
+    .sort((left, right) => left.startAt - right.startAt)
+    .map((event) => `${event.title}${event.allDay ? "" : ` at ${formatTimeOnly(event.startAt)}`}`);
+  return {
+    name: "calendar",
+    text: `On ${formatCalendarDate(dayStart)} ${period ? `in the ${period} ` : ""}you have: ${events.join("; ")}.`
   };
 }
 
@@ -908,69 +980,37 @@ function booleanState(value: unknown): string {
 async function manageAlarm(args: LocalToolArgs, services: LocalToolServices): Promise<LocalToolResult> {
   const action = String(args.action ?? "set").toLowerCase();
   const now = services.now?.() ?? Date.now();
-  const clearTimer = services.clearTimeout ?? clearTimeout;
   if (action === "list") {
-    const pending = Array.from(alarms.values()).sort((left, right) => left.dueAt - right.dueAt);
-    return {
-      name: "alarm",
-      text: pending.length
-        ? `Active alarms: ${pending.map(formatAlarm).join("; ")}.`
-        : "There are no active alarms."
-    };
+    return { name: "alarm", text: "Alarm requests are saved as Calendar events. Ask what is on your Calendar for a date." };
   }
   if (action === "cancel" || action === "delete" || action === "remove") {
-    const id = String(args.id ?? "").trim();
-    if (!id) {
-      throw new Error("Missing alarm id to cancel.");
-    }
-    const alarm = alarms.get(id);
-    if (!alarm) {
-      throw new Error(`No active alarm found with id ${id}.`);
-    }
-    clearTimer(alarm.timeout);
-    alarms.delete(id);
-    return { name: "alarm", text: `Cancelled alarm ${id}: ${alarm.label}.` };
+    return { name: "alarm", text: "Alarm requests are Calendar events now. Delete or edit the event in Calendar." };
   }
 
   const dueAt = parseAlarmTime(args.time ?? "", now);
   const label = String(args.label ?? "Alarm").trim() || "Alarm";
-  const id = `alarm-${now.toString(36)}`;
-  const delayMs = Math.max(0, dueAt - now);
-  const setTimer = services.setTimeout ?? setTimeout;
-  const timeout = setTimer(() => {
-    const alarm = alarms.get(id);
-    if (!alarm) {
-      return;
-    }
-    alarms.delete(id);
-    services.onAlarm?.({ id, dueAt, label });
-  }, delayMs);
-  alarms.set(id, { id, dueAt, label, timeout });
-
-  const setSystemAlarm = services.setSystemClockAlarm ?? setSystemClockAlarm;
-  let systemNote = "";
-  if (process.platform === "darwin" || process.platform === "win32") {
-    try {
-      const systemResult = await setSystemAlarm({ dueAt, label });
-      if (systemResult.detail) {
-        systemNote = ` ${systemResult.detail}`;
-      }
-    } catch (error) {
-      systemNote = ` I couldn't sync with the system Clock app: ${String(error)}`;
-    }
+  const setCalendarEvent = services.setCalendarEvent ?? setSystemCalendarEvent;
+  const result = await setCalendarEvent({ title: label, startAt: dueAt, allDay: false });
+  if (!result.eventCreated) {
+    throw new Error(result.detail || "Calendar event was not created.");
   }
 
   return {
     name: "alarm",
-    text: `Set alarm ${id} for ${formatDateTimeLocal(dueAt)}: ${label}.${systemNote}`
+    text: `${result.calendarOpened ? "Opened Calendar. " : ""}Added ${label} to Calendar for ${formatDateTimeLocal(dueAt)}.`
   };
 }
 
 function parseAlarmTime(value: string, now = Date.now()): number {
-  const input = value.trim().toLowerCase();
+  const input = normalizeAlarmTimePhrase(value);
   if (!input) {
     throw new Error("Missing alarm time.");
   }
+
+  const wantsTomorrow = /\btomorrow\b/.test(input);
+  const wantsTonight = /\btonight\b/.test(input);
+  const wantsToday = /\btoday\b/.test(input);
+
   const duration = input.match(/\b(?:in\s+)?(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b/);
   if (duration) {
     const amount = Number(duration[1]);
@@ -978,20 +1018,61 @@ function parseAlarmTime(value: string, now = Date.now()): number {
     const multiplier = /^s/.test(unit) ? 1000 : /^m/.test(unit) ? 60_000 : 3_600_000;
     return now + amount * multiplier;
   }
-  const atTime = input.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+
+  const atTime = input.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
   if (atTime) {
     const due = new Date(now);
+    if (wantsTomorrow) {
+      due.setDate(due.getDate() + 1);
+    }
     let hour = Number(atTime[1]);
     const minute = Number(atTime[2] ?? 0);
     const meridiem = atTime[3];
-    if (meridiem === "pm" && hour < 12) hour += 12;
-    if (meridiem === "am" && hour === 12) hour = 0;
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
     due.setHours(hour, minute, 0, 0);
-    if (due.getTime() <= now) {
+    if (!wantsTomorrow && !wantsToday && !wantsTonight && due.getTime() <= now) {
       due.setDate(due.getDate() + 1);
+    }
+    if (wantsToday && due.getTime() <= now) {
+      throw new Error(`That time has already passed today: ${value}.`);
     }
     return due.getTime();
   }
+
+  const clockTime = input.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (clockTime) {
+    const rawHour = Number(clockTime[1]);
+    const minute = Number(clockTime[2]);
+    if (rawHour > 23 || minute > 59) {
+      throw new Error(`Could not understand alarm time: ${value}.`);
+    }
+    const due = new Date(now);
+    let hour = rawHour;
+    if (rawHour <= 12) {
+      const currentHour = due.getHours();
+      hour = currentHour >= 12 && rawHour < 12 ? rawHour + 12 : rawHour;
+    }
+    due.setHours(hour, minute, 0, 0);
+    if (!wantsTomorrow && !wantsToday && due.getTime() <= now && rawHour <= 12) {
+      due.setHours(due.getHours() + 12);
+    }
+    if (!wantsTomorrow && !wantsToday && due.getTime() <= now) {
+      due.setDate(due.getDate() + 1);
+    }
+    if (wantsTomorrow) {
+      due.setDate(due.getDate() + 1);
+    }
+    if (wantsToday && due.getTime() <= now) {
+      throw new Error(`That time has already passed today: ${value}.`);
+    }
+    return due.getTime();
+  }
+
   const parsed = Date.parse(value);
   if (Number.isFinite(parsed)) {
     return parsed;
@@ -999,8 +1080,120 @@ function parseAlarmTime(value: string, now = Date.now()): number {
   throw new Error(`Could not understand alarm time: ${value}.`);
 }
 
-function formatAlarm(alarm: AlarmItem): string {
-  return `${alarm.id} at ${formatDateTimeLocal(alarm.dueAt)} (${alarm.label})`;
+const MONTH_INDEX: Record<string, number> = {
+  january: 0,
+  jan: 0,
+  february: 1,
+  feb: 1,
+  march: 2,
+  mar: 2,
+  april: 3,
+  apr: 3,
+  may: 4,
+  june: 5,
+  jun: 5,
+  july: 6,
+  jul: 6,
+  august: 7,
+  aug: 7,
+  september: 8,
+  sep: 8,
+  sept: 8,
+  october: 9,
+  oct: 9,
+  november: 10,
+  nov: 10,
+  december: 11,
+  dec: 11
+};
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  sunday: 0,
+  sun: 0,
+  monday: 1,
+  mon: 1,
+  tuesday: 2,
+  tue: 2,
+  tues: 2,
+  wednesday: 3,
+  wed: 3,
+  thursday: 4,
+  thu: 4,
+  thurs: 4,
+  friday: 5,
+  fri: 5,
+  saturday: 6,
+  sat: 6
+};
+
+function parseCalendarDate(value: string, now = Date.now()): number {
+  const input = String(value ?? "")
+    .toLowerCase()
+    .replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, "$1")
+    .replace(/[^\w\s/,-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!input) {
+    throw new Error("Missing calendar date.");
+  }
+
+  const base = new Date(now);
+  if (/\btoday\b/.test(input)) {
+    return new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime();
+  }
+  if (/\btomorrow\b/.test(input)) {
+    return new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1).getTime();
+  }
+
+  const weekday = input.match(/\b(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/);
+  if (weekday) {
+    const target = WEEKDAY_INDEX[weekday[1] ?? ""];
+    if (target === undefined) {
+      throw new Error(`Could not understand calendar date: ${value}.`);
+    }
+    const today = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+    const delta = (target - today.getDay() + 7) % 7 || 7;
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate() + delta).getTime();
+  }
+
+  const monthDay = input.match(
+    /\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/
+  );
+  if (monthDay) {
+    const month = MONTH_INDEX[monthDay[1] ?? ""];
+    const day = Number(monthDay[2]);
+    let year = monthDay[3] ? Number(monthDay[3]) : base.getFullYear();
+    if (month === undefined || day < 1 || day > 31) {
+      throw new Error(`Could not understand calendar date: ${value}.`);
+    }
+    let due = new Date(year, month, day);
+    if (!monthDay[3] && due.getTime() < new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime()) {
+      year += 1;
+      due = new Date(year, month, day);
+    }
+    return due.getTime();
+  }
+
+  const numeric = input.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (numeric) {
+    const month = Number(numeric[1]) - 1;
+    const day = Number(numeric[2]);
+    const rawYear = numeric[3];
+    let year = rawYear ? Number(rawYear.length === 2 ? `20${rawYear}` : rawYear) : base.getFullYear();
+    let due = new Date(year, month, day);
+    if (!rawYear && due.getTime() < new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime()) {
+      year += 1;
+      due = new Date(year, month, day);
+    }
+    return due.getTime();
+  }
+
+  throw new Error(`Could not understand calendar date: ${value}.`);
+}
+
+/** Summary of alarm behavior for LLM system context. */
+export function listActiveAlarmsSummary(): string {
+  return "Alarm requests are saved as Calendar events; Pythos does not keep separate active alarms.";
 }
 
 function formatDateTimeLocal(timestamp: number): string {
@@ -1008,6 +1201,22 @@ function formatDateTimeLocal(timestamp: number): string {
     weekday: "short",
     month: "short",
     day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+function formatCalendarDate(timestamp: number): string {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(timestamp));
+}
+
+function formatTimeOnly(timestamp: number): string {
+  return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(timestamp));
@@ -1439,17 +1648,65 @@ async function duckDuckGoSearch(query: string, fetchService?: FetchService): Pro
 }
 
 function formatWebSearchResult(query: string, fetchedAt: string, results: WebSearchResult[]): LocalToolResult {
+  const conciseText = summarizeWebSearchResults(query, results);
   return {
     name: "web_search",
     query,
     fetchedAt,
     results,
-    text:
-      `Web search results for "${query}" fetched ${fetchedAt}: ` +
-      results
-        .map((result, index) => `${index + 1}. ${result.title}. ${result.snippet || "No snippet."} Source: ${result.url}`)
-        .join(" ")
+    text: conciseText
   };
+}
+
+function summarizeWebSearchResults(query: string, results: WebSearchResult[]): string {
+  const top = results.slice(0, 3);
+  const subject = query.replace(/^who\s+is\s+/i, "").trim();
+  if (/^who\s+is\b/i.test(query) && subject) {
+    const exact = top.find((result) => textContainsAllTerms(`${result.title} ${result.snippet}`, subject));
+    if (!exact) {
+      return `I found possible matches, but nothing clearly identifying ${subject}. Top matches: ${top.map(compactResultTitle).join("; ")}.`;
+    }
+    const snippet = compactSnippet(exact.snippet);
+    return snippet ? `${compactResultTitle(exact)}: ${snippet}` : compactResultTitle(exact);
+  }
+  if (top.length === 1) {
+    const [result] = top;
+    const snippet = compactSnippet(result.snippet);
+    return snippet ? `${compactResultTitle(result)}: ${snippet}` : compactResultTitle(result);
+  }
+  return `Top results: ${top.map(compactResultTitle).join("; ")}.`;
+}
+
+function textContainsAllTerms(text: string, terms: string): boolean {
+  const normalized = text.toLowerCase();
+  return terms
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 2)
+    .every((term) => normalized.includes(term));
+}
+
+function compactResultTitle(result: WebSearchResult): string {
+  const title = result.title.replace(/\s+/g, " ").trim();
+  const domain = domainFromUrl(result.url);
+  return domain ? `${title} (${domain})` : title;
+}
+
+function compactSnippet(snippet: string): string {
+  const clean = snippet.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "";
+  }
+  const firstSentence = clean.match(/^(.+?[.!?])\s/)?.[1] ?? clean;
+  return firstSentence.length > 160 ? `${firstSentence.slice(0, 157).trim()}...` : firstSentence;
+}
+
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    return "";
+  }
 }
 
 function parseDuckDuckGoResults(html: string): WebSearchResult[] {
@@ -1704,7 +1961,7 @@ function describeCapabilities(): LocalToolResult {
     name: "capabilities",
     text:
       "I'm Pythos, running entirely on-device with local Gemma. I can open apps and websites, " +
-      "look at your screen and describe it with local vision, check weather and time, set alarms in Clock, " +
+      "look at your screen and describe it with local vision, check weather and time, add alarm requests to Calendar, " +
       "control Spotify, do math, run code, search the web, research topics, use system tools like " +
       "clipboard, files, and notes, and remember things you tell me. Everything runs locally, so it " +
       "keeps working offline and your voice never leaves the machine."
