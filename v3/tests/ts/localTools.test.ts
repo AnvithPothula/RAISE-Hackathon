@@ -356,6 +356,8 @@ describe("resolveDirectLocalTool", () => {
     expect(resolveDirectLocalTool("open excel")).toEqual({ name: "open_app", args: { app: "excel" } });
     expect(resolveDirectLocalTool("please launch notes")).toEqual({ name: "open_app", args: { app: "notes" } });
     expect(resolveDirectLocalTool("open excel please")).toEqual({ name: "open_app", args: { app: "excel" } });
+    expect(resolveDirectLocalTool("Open Discord")).toEqual({ name: "open_app", args: { app: "Discord" } });
+    expect(resolveDirectLocalTool("open slack")).toEqual({ name: "open_app", args: { app: "slack" } });
   });
 
   it("handles filler words like 'open up X' and 'launch my X'", () => {

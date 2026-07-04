@@ -1,7 +1,7 @@
 {
   "python": {
     "workerModule": "pythos.worker",
-    "lowResourceMode": false
+    "lowResourceMode": true
   },
   "models": {
     "wakeWord": "Models/wakeword/pythos.onnx",
@@ -24,7 +24,7 @@
     "baseUrl": "http://127.0.0.1:11434",
     "model": "gemma4:12b",
     "lowResourceModel": "gemma4:e2b",
-    "think": "auto"
+    "think": "off"
   },
   "gradium": {
     "baseWsUrl": "wss://api.gradium.ai/api",

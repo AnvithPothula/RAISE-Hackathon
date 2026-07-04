@@ -85,6 +85,18 @@ export function decideThinking(prompt: string, mode: ThinkMode = "auto"): ThinkD
 
   const text = ` ${prompt.toLowerCase()} `;
   const words = text.split(/\s+/).filter(Boolean).length;
+  const operationalSignals = [
+    "open ",
+    "launch ",
+    "start ",
+    "pull up ",
+    "bring up "
+  ];
+  const matchedOperational = operationalSignals.find((signal) => text.includes(signal));
+  if (matchedOperational) {
+    return { think: false, reason: `detected "${matchedOperational.trim()}"` };
+  }
+
   const reasoningSignals = [
     "why ",
     "how do",
