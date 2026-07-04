@@ -8,53 +8,76 @@ export async function openLocalApp(target: string): Promise<AppOpenOutcome> {
     return { opened: true, detail: `Opened ${target}.` };
   }
   if (process.platform === "darwin") {
-    await openLocalAppOnMac(target);
-    return { opened: true, detail: `Opened ${target}.` };
+    return openLocalAppOnMac(target);
   }
   if (process.platform !== "win32") {
-    await openLocalAppOnLinux(target);
-    return { opened: true, detail: `Opened ${target}.` };
+    return openLocalAppOnLinux(target);
   }
   return openLocalAppOnWindows(target);
 }
 
-function openLocalAppOnMac(target: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("open", ["-a", target], { stdio: "pipe" });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      const fallback = spawn("open", [target], { detached: true, stdio: "ignore" });
-      fallback.on("error", () => reject(new Error(stderr.trim() || `Could not open app ${target}.`)));
-      fallback.on("spawn", () => {
-        fallback.unref();
-        resolve();
-      });
-    });
+function macAppInstalled(appName: string): Promise<boolean> {
+  const escaped = appName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return new Promise((resolve) => {
+    const child = spawn("osascript", ["-e", `id of application "${escaped}"`], { stdio: "pipe" });
+    child.on("error", () => resolve(false));
+    child.on("exit", (code) => resolve(code === 0));
   });
 }
 
-function openLocalAppOnLinux(target: string): Promise<void> {
-  return new Promise((resolve, reject) => {
+function openLocalAppOnMac(target: string): Promise<AppOpenOutcome> {
+  return new Promise((resolve) => {
+    void (async () => {
+      const installed = await macAppInstalled(target);
+      if (!installed) {
+        resolve({
+          opened: false,
+          detail: `I couldn't find ${target} on your Mac. Check the name or install it first.`
+        });
+        return;
+      }
+
+      const child = spawn("open", ["-a", target], { stdio: "pipe" });
+      let stderr = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf-8");
+      });
+      child.on("error", (error) => {
+        resolve({ opened: false, detail: `Could not open ${target}: ${error.message}` });
+      });
+      child.on("exit", (code) => {
+        if (code === 0) {
+          resolve({ opened: true, detail: `Opened ${target}.` });
+          return;
+        }
+        const reason = stderr.trim();
+        resolve({
+          opened: false,
+          detail: reason.includes("Unable to find application")
+            ? `I couldn't find ${target} on your Mac. Check the name or install it first.`
+            : reason || `Could not open ${target}.`
+        });
+      });
+    })();
+  });
+}
+
+function openLocalAppOnLinux(target: string): Promise<AppOpenOutcome> {
+  return new Promise((resolve) => {
     const child = spawn(target, { detached: true, stdio: "ignore" });
     child.on("error", () => {
       const fallback = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
-      fallback.on("error", () => reject(new Error(`Could not open app ${target}.`)));
+      fallback.on("error", () => {
+        resolve({ opened: false, detail: `I couldn't find or launch ${target} on this system.` });
+      });
       fallback.on("spawn", () => {
         fallback.unref();
-        resolve();
+        resolve({ opened: true, detail: `Opened ${target}.` });
       });
     });
     child.on("spawn", () => {
       child.unref();
-      resolve();
+      resolve({ opened: true, detail: `Opened ${target}.` });
     });
   });
 }

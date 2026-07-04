@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { routeUserIntent, resolveContextualLocalTool as resolveContextualFromRouter } from "./intentRouter.js";
+import { normalizeMathExpression } from "./mathExpression.js";
+import { cleanAppTarget, normalizeVoiceTranscript } from "./voiceTranscript.js";
 import { runSkillScript, type SkillScriptArgs, type SkillScriptResult } from "./skillRegistry.js";
 import type { UserMemoryService } from "./userMemory.js";
 
@@ -182,7 +184,8 @@ const WINDOWS_APP_ALIASES: Record<string, string> = {
   "command prompt": "cmd.exe",
   powershell: "powershell.exe",
   terminal: "wt.exe",
-  spotify: "spotify.exe"
+  spotify: "spotify.exe",
+  "github desktop": "GitHubDesktop.exe"
 };
 
 const MAC_APP_ALIASES: Record<string, string> = {
@@ -233,6 +236,7 @@ const MAC_APP_ALIASES: Record<string, string> = {
   calendar: "Calendar",
   messages: "Messages",
   photos: "Photos",
+  "github desktop": "GitHub Desktop",
   "app store": "App Store",
   "activity monitor": "Activity Monitor"
 };
@@ -277,6 +281,12 @@ const WEBSITE_ALIASES: Record<string, string> = {
   twitter: "x.com"
 };
 
+/** Known site names — opening these defaults to the browser unless the user asks for the app. */
+export function websiteAliasForName(name: string): string | null {
+  const normalized = String(name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  return WEBSITE_ALIASES[normalized] ?? null;
+}
+
 export function extractUserLocation(prompt: string): string | null {
   const match = prompt.match(/\b(?:i am|i'm|im|i live|i live in|my location is|set location to)\s+(?:in\s+)?([a-z][a-z\s,.-]{2,})$/i);
   return cleanLocation(match?.[1] ?? "");
@@ -303,7 +313,7 @@ export function resolveDirectLocalTool(
 ): LocalToolInvocation | null {
   const decision = routeUserIntent(prompt, context);
   if (decision.invocation) {
-    return decision.invocation;
+    return normalizeOpenAppInvocation(decision.invocation);
   }
 
   const cleanPrompt = cleanDirectPrompt(prompt);
@@ -313,6 +323,17 @@ export function resolveDirectLocalTool(
   }
 
   return null;
+}
+
+function normalizeOpenAppInvocation(invocation: LocalToolInvocation): LocalToolInvocation {
+  if (invocation.name !== "open_app") {
+    return invocation;
+  }
+  const raw = String(invocation.args.app ?? invocation.args.query ?? "").trim();
+  if (!raw) {
+    return invocation;
+  }
+  return { ...invocation, args: { ...invocation.args, app: normalizeAppName(cleanAppTarget(raw)) } };
 }
 
 export function resolveContextualLocalTool(
@@ -926,7 +947,8 @@ function formatDateTimeLocal(timestamp: number): string {
 }
 
 async function openApp(appName: string, services: LocalToolServices): Promise<LocalToolResult> {
-  const app = normalizeAppName(stripOpenIntentWords(String(appName ?? "").trim()));
+  const raw = String(appName ?? "").trim();
+  const app = normalizeAppName(cleanAppTarget(raw));
   if (!app) {
     throw new Error("Missing app name.");
   }
@@ -935,6 +957,10 @@ async function openApp(appName: string, services: LocalToolServices): Promise<Lo
   }
   const outcome = await services.openApp(app);
   if (outcome && outcome.opened === false) {
+    const fallbackSite = websiteAliasForName(raw);
+    if (fallbackSite && services.openWebsite) {
+      return openWebsite(fallbackSite, services);
+    }
     throw new Error(outcome.detail || `Could not confirm ${app} actually opened.`);
   }
   return { name: "open_app", text: outcome?.detail ?? `Opened ${app}.` };
@@ -969,7 +995,7 @@ function titleCaseAppName(value: string): string {
 }
 
 function normalizeWebsiteUrl(value: string): string {
-  const input = stripOpenIntentWords(String(value ?? "").trim());
+  const input = cleanAppTarget(String(value ?? "").trim());
   if (!input) {
     throw new Error("Missing website URL.");
   }
@@ -981,15 +1007,6 @@ function normalizeWebsiteUrl(value: string): string {
     throw new Error("Only http and https websites can be opened.");
   }
   return url.toString();
-}
-
-function stripOpenIntentWords(value: string): string {
-  return value
-    .replace(/^(open|launch|start|go to|visit|browse to|pull up|bring up|fire up)\s+/i, "")
-    .replace(/^(up|the|my|a|an)\s+/i, "")
-    .replace(/\s+(for me|please|thanks|thank you)$/i, "")
-    .replace(/\s+(website|site|webpage|app|application|program)$/i, "")
-    .trim();
 }
 
 function resolveDirectWeatherTool(prompt: string): LocalToolInvocation | null {
@@ -1419,11 +1436,7 @@ async function inspectScreen(args: LocalToolArgs, services: LocalToolServices): 
 }
 
 function calculate(expression: string): LocalToolResult {
-  const normalized = expression
-    .replace(/[×x]/gi, "*")
-    .replace(/[÷]/g, "/")
-    .replace(/[–—]/g, "-")
-    .trim();
+  const normalized = normalizeMathExpression(expression);
   if (!normalized || !/^[\d\s+\-*/%.()]+$/.test(normalized)) {
     throw new Error("Calculator expression contains unsupported characters.");
   }
