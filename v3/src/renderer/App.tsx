@@ -1632,38 +1632,31 @@ function fullEventPayload(payload: unknown): string {
   }
 }
 
-<<<<<<< Updated upstream
-/** The Gemma model actually serving requests, honoring provider and low-resource mode. */
-function activeModel(config: AppConfig | null | undefined): string {
-  if (config?.openrouter?.enabled) {
-    return config.openrouter.model ?? "google/gemma-4-31b-it:free";
-  }
-=======
 /** The base Gemma tag requested by settings, honoring low-resource mode. */
 function activeModelBase(config: AppConfig | null | undefined): string {
->>>>>>> Stashed changes
   if (config?.python?.lowResourceMode && config.ollama?.lowResourceModel) {
     return config.ollama.lowResourceModel;
   }
   return config?.ollama?.model ?? "gemma4:12b";
 }
 
-<<<<<<< Updated upstream
+/**
+ * The model requested by settings, including OpenRouter override and MLX variant.
+ * The perf HUD separately shows the model that actually served each turn.
+ */
+function activeModel(config: AppConfig | null | undefined): string {
+  if (config?.openrouter?.enabled) {
+    return config.openrouter.model ?? "google/gemma-4-31b-it:free";
+  }
+  return applyEngineVariant(activeModelBase(config), config?.ollama?.engineVariant);
+}
+
 function brainSummary(config: AppConfig | null | undefined): string {
   const model = activeModel(config);
   if (config?.openrouter?.enabled) {
     return `Gemma · ${model} (OpenRouter)`;
   }
   return `Gemma · ${model} (local)`;
-=======
-/**
- * The Gemma model requested by settings, including the engine variant. The
- * perf HUD separately shows the model that actually served each turn, so a
- * missing MLX pull is visible rather than silently misreported.
- */
-function activeModel(config: AppConfig | null | undefined): string {
-  return applyEngineVariant(activeModelBase(config), config?.ollama?.engineVariant);
->>>>>>> Stashed changes
 }
 
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {

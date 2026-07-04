@@ -140,15 +140,6 @@ export type AppConfig = {
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
-<<<<<<< Updated upstream
-  ollama: { model: string; baseUrl?: string; lowResourceModel?: string; think?: ThinkMode; thinkLevel?: ThinkLevel };
-  openrouter?: {
-    enabled?: boolean;
-    model?: string;
-    baseUrl?: string;
-    /** Stored in per-user settings only — never commit this to config.json. */
-    apiKey?: string;
-=======
   ollama: {
     model: string;
     baseUrl?: string;
@@ -156,7 +147,13 @@ export type AppConfig = {
     think?: ThinkMode;
     thinkLevel?: ThinkLevel;
     engineVariant?: EngineVariant;
->>>>>>> Stashed changes
+  };
+  openrouter?: {
+    enabled?: boolean;
+    model?: string;
+    baseUrl?: string;
+    /** Stored in per-user settings only — never commit this to config.json. */
+    apiKey?: string;
   };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   mcp?: McpConfig;
