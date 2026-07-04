@@ -13,6 +13,7 @@ import {
   resolveContextualLocalTool,
   resolveDirectLocalTool,
   runNamedLocalTool,
+  type AppOpenOutcome,
   type LocalToolArgs,
   type LocalToolName,
   type LocalToolServices
@@ -856,30 +857,20 @@ async function openExternalWebsite(url: string): Promise<void> {
   await shell.openExternal(url);
 }
 
-function openLocalApp(target: string): Promise<void> {
+async function openLocalApp(target: string): Promise<AppOpenOutcome> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
-    return shell.openExternal(target);
+    await shell.openExternal(target);
+    return { opened: true, detail: `Opened ${target}.` };
   }
   if (process.platform === "darwin") {
-    return openLocalAppOnMac(target);
+    await openLocalAppOnMac(target);
+    return { opened: true, detail: `Opened ${target}.` };
   }
   if (process.platform !== "win32") {
-    return openLocalAppOnLinux(target);
+    await openLocalAppOnLinux(target);
+    return { opened: true, detail: `Opened ${target}.` };
   }
-  return new Promise((resolve, reject) => {
-    const child = spawn(target, {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: false
-    });
-    child.on("error", () => {
-      openLocalAppWithPowerShell(target).then(resolve, reject);
-    });
-    child.on("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
+  return openLocalAppOnWindows(target);
 }
 
 function openLocalAppOnMac(target: string): Promise<void> {
@@ -924,25 +915,61 @@ function openLocalAppOnLinux(target: string): Promise<void> {
   });
 }
 
-function openLocalAppWithPowerShell(target: string): Promise<void> {
+function openLocalAppOnWindows(target: string): Promise<AppOpenOutcome> {
   return new Promise((resolve, reject) => {
     const escaped = target.replace(/'/g, "''");
+    // Launch through Start-Process (resolves PATH, App Paths, and app aliases),
+    // then confirm a process actually came up so we never claim success blindly.
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "try {",
+      `  $proc = Start-Process -FilePath '${escaped}' -PassThru`,
+      "} catch {",
+      "  Write-Output ('FAIL:' + $_.Exception.Message)",
+      "  exit 0",
+      "}",
+      "if ($null -eq $proc) { Write-Output 'HANDOFF'; exit 0 }",
+      "Start-Sleep -Milliseconds 400",
+      "$alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue",
+      "if ($alive) { Write-Output ('OK:' + $alive.ProcessName) } else { Write-Output 'HANDOFF' }",
+      "exit 0"
+    ].join("; ");
     const child = spawn(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Start-Process -FilePath '${escaped}'`],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
       { windowsHide: true, stdio: "pipe" }
     );
+    let stdout = "";
     let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf-8");
     });
     child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(stderr.trim() || `Could not open app ${target}.`));
+    child.on("exit", () => {
+      const output = stdout.trim();
+      if (output.startsWith("OK:")) {
+        const processName = output.slice(3).trim();
+        resolve({ opened: true, detail: `Opened ${processName || target}.` });
+        return;
       }
+      if (output === "HANDOFF") {
+        // Start-Process succeeded but the launcher handed off to an existing
+        // instance, so there is no fresh process to confirm. Treat as opened.
+        resolve({ opened: true, detail: `Opened ${target}.` });
+        return;
+      }
+      if (output.startsWith("FAIL:")) {
+        const reason = output.slice(5).trim();
+        resolve({ opened: false, detail: `Could not open ${target}: ${reason || "app not found"}.` });
+        return;
+      }
+      resolve({
+        opened: false,
+        detail: `Could not confirm ${target} opened${stderr.trim() ? `: ${stderr.trim()}` : "."}`
+      });
     });
   });
 }

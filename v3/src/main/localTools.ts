@@ -29,6 +29,11 @@ export type LocalToolResult = {
   results?: WebSearchResult[];
 };
 
+export type AppOpenOutcome = {
+  opened: boolean;
+  detail?: string;
+};
+
 export type LocalToolName = LocalToolResult["name"];
 export type LocalToolInvocation = {
   name: LocalToolName;
@@ -37,7 +42,7 @@ export type LocalToolInvocation = {
 export type LocalToolServices = {
   captureScreen?: () => Promise<{ path: string; width: number; height: number }>;
   analyzeScreen?: (path: string, prompt: string) => Promise<string>;
-  openApp?: (app: string) => Promise<void>;
+  openApp?: (app: string) => Promise<AppOpenOutcome | void>;
   openWebsite?: (url: string) => Promise<void>;
   onAlarm?: (alarm: AlarmItem) => void;
   fetch?: FetchService;
@@ -888,8 +893,11 @@ async function openApp(appName: string, services: LocalToolServices): Promise<Lo
   if (!services.openApp) {
     throw new Error("Opening apps is not available in this runtime.");
   }
-  await services.openApp(app);
-  return { name: "open_app", text: `Opened ${app}.` };
+  const outcome = await services.openApp(app);
+  if (outcome && outcome.opened === false) {
+    throw new Error(outcome.detail || `Could not confirm ${app} actually opened.`);
+  }
+  return { name: "open_app", text: outcome?.detail ?? `Opened ${app}.` };
 }
 
 async function openWebsite(value: string, services: LocalToolServices): Promise<LocalToolResult> {
