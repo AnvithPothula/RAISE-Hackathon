@@ -1,4 +1,6 @@
 import type { LocalToolInvocation, LocalToolName } from "./localTools.js";
+import { extractMathExpression, looksLikeMathQuestion } from "./mathExpression.js";
+import { cleanAppTarget, stripConversationalPrefix } from "./voiceTranscript.js";
 
 /** instant = run a local tool with zero LLM; simple/complex = Gemma with trimmed/full tools. */
 export type TaskDifficulty = "instant" | "simple" | "complex";
@@ -170,6 +172,9 @@ function classifyLlmToolScope(cleanPrompt: string, normalized: string): LlmToolS
 }
 
 function looksLikeGeneralKnowledge(normalized: string): boolean {
+  if (looksLikeMathQuestion(normalized)) {
+    return false;
+  }
   if (
     /\b(weather|forecast|open|launch|start|play|spotify|alarm|clipboard|screen|folder|directory|download|search|google|remember|forget|calculate|inspect|code|research|delegate|sub agent)\b/.test(
       normalized
@@ -292,22 +297,9 @@ function resolveScreenIntent(cleanPrompt: string, normalized: string): LocalTool
 }
 
 function resolveCalculatorIntent(cleanPrompt: string, normalized: string): LocalToolInvocation | null {
-  const patterns = [
-    /^(?:please\s+)?(?:what(?:'s| is)|calculate|compute|solve|evaluate)\s+(.+)$/i,
-    /^(?:please\s+)?how much is\s+(.+)$/i
-  ];
-  for (const pattern of patterns) {
-    const match = cleanPrompt.match(pattern);
-    if (!match) {
-      continue;
-    }
-    const expression = normalizeMathExpression(match[1]);
-    if (expression && looksLikeMathExpression(expression)) {
-      return { name: "calculator", args: { expression } };
-    }
-  }
-  if (/^[\d\s+\-*/%.()]+$/.test(cleanPrompt) && /[\d]/.test(cleanPrompt) && /[+\-*/%]/.test(cleanPrompt)) {
-    return { name: "calculator", args: { expression: cleanPrompt } };
+  const expression = extractMathExpression(cleanPrompt);
+  if (expression) {
+    return { name: "calculator", args: { expression } };
   }
   return null;
 }
@@ -406,16 +398,27 @@ function resolveTimeIntent(cleanPrompt: string, normalized: string): LocalToolIn
 
 function resolveOpenIntent(cleanPrompt: string): LocalToolInvocation | null {
   const match = cleanPrompt.match(
-    /^(?:please\s+)?(?:open|launch|start|pull|bring|fire)\s+(?:up\s+|open\s+)?(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
+    /\b(?:please\s+)?(?:openup|open|launch|start|pull|bring|fire)(?:\s+up|\s+open)?\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$/i
   );
   if (!match) {
     return null;
   }
-  const target = stripOpenIntentWords(match[1]);
+  const rawTarget = match[1];
+  const target = cleanAppTarget(rawTarget);
   if (!target) {
     return null;
   }
   const normalized = target.toLowerCase().replace(/\s+/g, " ").trim();
+  const wantsDesktopApp =
+    /\b(desktop|application|app)\b/i.test(rawTarget) ||
+    /\b(?:desktop|application)\s+(?:app\s+)?$/i.test(cleanPrompt);
+
+  if (wantsDesktopApp) {
+    const appTarget = normalized === "github" ? "GitHub Desktop" : target;
+    if (isDirectAppLaunchTarget(appTarget.toLowerCase(), appTarget)) {
+      return { name: "open_app", args: { app: appTarget } };
+    }
+  }
   if (isWebsiteTarget(normalized, target)) {
     return { name: "open_website", args: { url: target } };
   }
@@ -477,38 +480,21 @@ function cleanLocation(value: string): string | null {
 }
 
 function cleanDirectPrompt(prompt: string): string {
-  return String(prompt ?? "")
-    .trim()
-    .replace(/[.!?]+$/g, "")
-    .replace(/^(?:hey\s+)?pythos[,:\s]+/i, "")
-    .trim();
+  return stripConversationalPrefix(
+    String(prompt ?? "")
+      .trim()
+      .replace(/[.!?]+$/g, "")
+      .replace(/^(?:hey\s+)?pythos[,:\s]+/i, "")
+      .trim()
+  );
 }
 
 function normalizeCommandText(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^\w\s'%]/g, " ")
+    .replace(/[^\w\s'%+]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function normalizeMathExpression(value: string): string {
-  return value
-    .replace(/\bplus\b/gi, "+")
-    .replace(/\bminus\b/gi, "-")
-    .replace(/\btimes\b/gi, "*")
-    .replace(/\bmultiplied by\b/gi, "*")
-    .replace(/\bdivided by\b/gi, "/")
-    .replace(/\bover\b/gi, "/")
-    .replace(/[×x]/gi, "*")
-    .replace(/[÷]/g, "/")
-    .replace(/[–—]/g, "-")
-    .replace(/\s+/g, "")
-    .trim();
-}
-
-function looksLikeMathExpression(value: string): boolean {
-  return /^[\d+\-*/%.()]+$/.test(value) && /\d/.test(value) && /[+\-*/%]/.test(value);
 }
 
 function extractAlarmTimeFromPrompt(prompt: string): string | null {
@@ -592,13 +578,4 @@ function isDirectAppLaunchTarget(normalized: string, target: string): boolean {
     return false;
   }
   return /^[a-z0-9][a-z0-9\s.-]*$/i.test(stripped);
-}
-
-function stripOpenIntentWords(value: string): string {
-  return value
-    .replace(/^(open|launch|start|go to|visit|browse to|pull up|bring up|fire up)\s+/i, "")
-    .replace(/^(up|the|my|a|an)\s+/i, "")
-    .replace(/\s+(for me|please|thanks|thank you)$/i, "")
-    .replace(/\s+(website|site|webpage|app|application|program)$/i, "")
-    .trim();
 }
