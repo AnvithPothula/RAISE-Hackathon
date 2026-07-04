@@ -1224,7 +1224,7 @@ async function inspectScreen(args: LocalToolArgs, services: LocalToolServices): 
   const screenshot = await services.captureScreen();
   const analysis = services.analyzeScreen
     ? await services.analyzeScreen(screenshot.path, prompt)
-    : "Screen interpretation requires a vision-capable Ollama model; this runtime only captured the screenshot.";
+    : "Screen interpretation requires a vision-capable Gemini model; this runtime only captured the screenshot.";
   return {
     name: "screen",
     path: screenshot.path,

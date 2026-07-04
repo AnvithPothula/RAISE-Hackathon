@@ -29,7 +29,7 @@ class AudioConfig:
 
 
 @dataclass(frozen=True)
-class OllamaConfig:
+class GeminiConfig:
     base_url: str
     model: str
 
@@ -40,7 +40,7 @@ class WorkerConfig:
     low_resource_mode: bool
     models: ModelPaths
     audio: AudioConfig
-    ollama: OllamaConfig
+    gemini: GeminiConfig
 
 
 def _resolve_path(root: Path, value: str) -> Path:
@@ -72,9 +72,9 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
     python_data = data.get("python", {})
     model_data = data.get("models", {})
     audio_data = data.get("audio", {})
-    ollama_data = data.get("ollama", {})
+    gemini_data = data.get("gemini", {})
 
-    model_name = os.environ.get("PYTHOS_OLLAMA_MODEL") or ollama_data.get("model", "llama3:8b")
+    model_name = os.environ.get("PYTHOS_GEMINI_MODEL") or gemini_data.get("model", "gemini-2.5-flash")
 
     return WorkerConfig(
         root=root,
@@ -96,8 +96,8 @@ def load_config(config_path: str | Path | None = None) -> WorkerConfig:
             silence_timeout_seconds=float(audio_data.get("silenceTimeoutSeconds", 3)),
             tts_length_scale=float(audio_data.get("ttsLengthScale", 0.8)),
         ),
-        ollama=OllamaConfig(
-            base_url=str(ollama_data.get("baseUrl", "http://localhost:11434")).rstrip("/"),
+        gemini=GeminiConfig(
+            base_url=str(gemini_data.get("baseUrl", "https://generativelanguage.googleapis.com/v1beta")).rstrip("/"),
             model=str(model_name),
         ),
     )

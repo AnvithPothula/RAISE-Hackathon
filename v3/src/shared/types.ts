@@ -39,14 +39,14 @@ export type ConversationItem = {
   timestamp: number;
 };
 
-export type OllamaThinkLevel = "low" | "medium" | "high" | null;
+export type GeminiThinkLevel = "low" | "medium" | "high" | null;
 
 export type AppConfig = {
   python?: { workerModule: string; lowResourceMode: boolean };
   models?: Record<string, string>;
   audio?: Record<string, unknown>;
   spotify?: { clientId?: string; redirectUri?: string; tokenCache?: string };
-  ollama: { model: string; baseUrl: string; think?: OllamaThinkLevel };
+  gemini: { model: string; baseUrl?: string; apiKey?: string; think?: GeminiThinkLevel };
   pi: { enabled: boolean; command: string; args: string[]; cwd: string };
   gui: { visualizer: string; showPerformanceStats: boolean; maxTranscriptItems: number };
 };

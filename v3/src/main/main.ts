@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readConfig, writeConfig } from "./config.js";
-import { generateWithOllama } from "./ollamaFallback.js";
+import { generateWithGemini, resolveGeminiApiKey } from "./geminiClient.js";
 import { PythonWorkerBridge } from "./pythonWorker.js";
 import { PiRpcBridge } from "./piRpc.js";
 import {
@@ -63,7 +63,7 @@ const localToolServices: LocalToolServices = {
   userMemory,
   spotify: config.spotify,
   captureScreen,
-  analyzeScreen: analyzeScreenWithOllama,
+  analyzeScreen: analyzeScreenWithGemini,
   openApp: openLocalApp,
   openWebsite: openExternalWebsite,
   onAlarm: (alarm) => {
@@ -183,7 +183,7 @@ pi.on("event", (event) => {
   if (event.type === "exit") {
     if (pendingPiPrompts.size > 0) {
       broadcast("pi:event", event);
-      void respondWithOllamaFallback(activePrompt, "Pi exited while handling the request. Using direct Ollama fallback.");
+      void respondWithFallback(activePrompt, "Pi exited while handling the request. Using direct Gemini fallback.");
     } else {
       broadcast("assistant:state", "idle");
     }
@@ -191,7 +191,7 @@ pi.on("event", (event) => {
   }
   if ((event.type === "error" || event.type === "unavailable") && pendingPiPrompts.size > 0) {
     broadcast("pi:event", event);
-    void respondWithOllamaFallback(activePrompt, "Pi failed while handling the request. Using direct Ollama fallback.");
+    void respondWithFallback(activePrompt, "Pi failed while handling the request. Using direct Gemini fallback.");
     return;
   }
   if (event.type !== "stderr") {
@@ -206,9 +206,9 @@ pi.on("event", (event) => {
   if (piError) {
     clearPendingPiFallbacks();
     if (isUnsupportedToolModelError(piError)) {
-      void respondWithOllamaFallback(
+      void respondWithFallback(
         activePrompt,
-        `${config.ollama.model} cannot run Pi tool calls through Ollama. Using direct Ollama fallback.`
+        `${config.gemini.model} cannot run Pi tool calls. Using direct Gemini fallback.`
       );
       return;
     }
@@ -325,7 +325,7 @@ async function handleUserPrompt(prompt: string): Promise<void> {
       tool: lastRetryableTool.name,
       args: lastRetryableTool.args
     });
-    await retryLastTool(turnId, "ollama");
+    await retryLastTool(turnId, "gemini");
     return;
   }
 
@@ -343,7 +343,7 @@ async function handleUserPrompt(prompt: string): Promise<void> {
     return;
   }
 
-  await respondWithOllama(prompt, turnId);
+  await respondDirect(prompt, turnId);
 }
 
 async function handleEchoPrompt(context: { transcript: string; deviceId: string; sessionId: string }): Promise<EchoPromptReply> {
@@ -401,15 +401,15 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
   }
 
   try {
-    debug(`echo ollama response starting device=${context.deviceId} promptChars=${prompt.length}`);
-    emitDebugEvent("ollama request", {
+    debug(`echo gemini response starting device=${context.deviceId} promptChars=${prompt.length}`);
+    emitDebugEvent("gemini request", {
       turnId,
       source: "echo",
-      model: config.ollama.model,
+      model: config.gemini.model,
       promptChars: prompt.length
     });
     const text = sanitizeAssistantText(
-      await generateWithOllama(prompt, config, {
+      await generateWithGemini(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
@@ -418,7 +418,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
           if (phase === "start") {
             toolUsed = true;
           }
-          broadcastLocalToolEvent(phase, { ...result, route: "ollama", source: "echo", turnId });
+          broadcastLocalToolEvent(phase, { ...result, route: "gemini", source: "echo", turnId });
         }
       })
     );
@@ -427,7 +427,7 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
       return "I already moved on to another request.";
     }
     activePrompt = null;
-    emitDebugEvent("ollama response", { turnId, source: "echo", chars: text.length, toolUsed });
+    emitDebugEvent("gemini response", { turnId, source: "echo", chars: text.length, toolUsed });
     rememberTurn("assistant", text);
     broadcastAssistantText(text, "echo");
     broadcast("assistant:state", "speaking");
@@ -438,9 +438,9 @@ async function handleEchoPrompt(context: { transcript: string; deviceId: string;
     }, 5000);
     return { text, toolUsed };
   } catch (error) {
-    const message = `I could not reach Ollama. Make sure Ollama is running with ${config.ollama.model}, then try again. ${String(error)}`;
-    debug(`echo ollama response failed ${String(error)}`);
-    emitDebugEvent("ollama failed", { turnId, source: "echo", error: String(error) });
+    const message = `I could not reach Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
+    debug(`echo gemini response failed ${String(error)}`);
+    emitDebugEvent("gemini failed", { turnId, source: "echo", error: String(error) });
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -455,7 +455,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
   const invocation = directInvocation ?? contextualInvocation;
   const route = directInvocation ? "direct" : contextualInvocation ? "contextual-direct" : "direct";
   if (!invocation) {
-    emitDebugEvent("route ollama", {
+    emitDebugEvent("route gemini", {
       turnId: context.turnId,
       source: context.source,
       previousTool: lastRetryableTool?.name,
@@ -583,54 +583,54 @@ async function runStoredToolRetry(): Promise<string> {
   }
 }
 
-async function respondWithOllama(prompt: string, turnId = activeTurnId): Promise<void> {
+async function respondDirect(prompt: string, turnId = activeTurnId): Promise<void> {
   clearPendingPiFallbacks();
   try {
-    debug(`ollama response starting promptChars=${prompt.length}`);
-    emitDebugEvent("ollama request", {
+    debug(`gemini response starting promptChars=${prompt.length}`);
+    emitDebugEvent("gemini request", {
       turnId,
       source: "typed",
-      model: config.ollama.model,
+      model: config.gemini.model,
       promptChars: prompt.length
     });
     broadcast("assistant:state", "thinking");
     const text = sanitizeAssistantText(
-      await generateWithOllama(prompt, config, {
+      await generateWithGemini(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
         localToolServices,
         onToolEvent: (phase, result) =>
-          broadcastLocalToolEvent(phase, { ...result, route: "ollama", source: "typed", turnId })
+          broadcastLocalToolEvent(phase, { ...result, route: "gemini", source: "typed", turnId })
       })
     );
     if (turnId !== activeTurnId) {
-      debug(`ollama response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale ollama response ignored", { turnId, activeTurnId, source: "typed" });
+      debug(`gemini response ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale gemini response ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
-    debug(`ollama response complete chars=${text.length}`);
-    emitDebugEvent("ollama response", { turnId, source: "typed", chars: text.length });
+    debug(`gemini response complete chars=${text.length}`);
+    emitDebugEvent("gemini response", { turnId, source: "typed", chars: text.length });
     activePrompt = null;
     rememberTurn("assistant", text);
-    broadcastAssistantText(text, "ollama");
+    broadcastAssistantText(text, "gemini");
     pythonWorker.send({ type: "speak", text });
   } catch (error) {
     if (turnId !== activeTurnId) {
-      debug(`ollama error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
-      emitDebugEvent("stale ollama error ignored", { turnId, activeTurnId, source: "typed" });
+      debug(`gemini error ignored staleTurn=${turnId} activeTurn=${activeTurnId}`);
+      emitDebugEvent("stale gemini error ignored", { turnId, activeTurnId, source: "typed" });
       return;
     }
-    debug(`ollama response failed ${String(error)}`);
-    emitDebugEvent("ollama failed", { turnId, source: "typed", error: String(error) });
-    const message = `I could not reach Ollama. Make sure Ollama is running with ${config.ollama.model}, then try again. ${String(error)}`;
+    debug(`gemini response failed ${String(error)}`);
+    emitDebugEvent("gemini failed", { turnId, source: "typed", error: String(error) });
+    const message = `I could not reach Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
   }
 }
 
-async function respondWithOllamaFallback(prompt: string | null, reason: string): Promise<void> {
+async function respondWithFallback(prompt: string | null, reason: string): Promise<void> {
   clearPendingPiFallbacks();
   if (!prompt) {
     emitDebugEvent("fallback skipped", { source: "fallback", reason });
@@ -643,10 +643,10 @@ async function respondWithOllamaFallback(prompt: string | null, reason: string):
   }
 
   try {
-    debug(`ollama response starting reason="${reason}" promptChars=${prompt.length}`);
-    emitDebugEvent("ollama fallback request", {
+    debug(`gemini response starting reason="${reason}" promptChars=${prompt.length}`);
+    emitDebugEvent("gemini fallback request", {
       source: "fallback",
-      model: config.ollama.model,
+      model: config.gemini.model,
       promptChars: prompt.length,
       reason
     });
@@ -656,7 +656,7 @@ async function respondWithOllamaFallback(prompt: string | null, reason: string):
       payload: { type: "status", text: reason }
     });
     const text = sanitizeAssistantText(
-      await generateWithOllama(prompt, config, {
+      await generateWithGemini(prompt, config, {
         history: getRecentHistory(),
         knownLocation,
         userMemory: userMemory.summary(),
@@ -664,16 +664,16 @@ async function respondWithOllamaFallback(prompt: string | null, reason: string):
         onToolEvent: (phase, result) => broadcastLocalToolEvent(phase, { ...result, route: "fallback", source: "fallback" })
       })
     );
-    debug(`ollama response complete chars=${text.length}`);
-    emitDebugEvent("ollama fallback response", { source: "fallback", chars: text.length });
+    debug(`gemini response complete chars=${text.length}`);
+    emitDebugEvent("gemini fallback response", { source: "fallback", chars: text.length });
     activePrompt = null;
     rememberTurn("assistant", text);
-    broadcastAssistantText(text, "ollama-fallback");
+    broadcastAssistantText(text, "gemini-fallback");
     pythonWorker.send({ type: "speak", text });
   } catch (error) {
-    debug(`ollama response failed ${String(error)}`);
-    emitDebugEvent("ollama fallback failed", { source: "fallback", error: String(error) });
-    const message = `I could not reach Pi or Ollama. Make sure Ollama is running, then try again. ${String(error)}`;
+    debug(`gemini response failed ${String(error)}`);
+    emitDebugEvent("gemini fallback failed", { source: "fallback", error: String(error) });
+    const message = `I could not reach Pi or Gemini. Check your GEMINI_API_KEY and network, then try again. ${String(error)}`;
     broadcastAssistantText(message, "error");
     rememberTurn("assistant", message);
     broadcast("assistant:state", "error");
@@ -781,39 +781,53 @@ async function captureScreen(): Promise<{ path: string; width: number; height: n
   return { path: filePath, width: size.width, height: size.height };
 }
 
-async function analyzeScreenWithOllama(imagePath: string, prompt: string): Promise<string> {
+async function analyzeScreenWithGemini(imagePath: string, prompt: string): Promise<string> {
   try {
+    const apiKey = resolveGeminiApiKey(config);
     const image = fs.readFileSync(imagePath).toString("base64");
+    const baseUrl = (config.gemini.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta").replace(
+      /\/+$/,
+      ""
+    );
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 90000);
-    const response = await fetch(`${config.ollama.baseUrl}/api/chat`, {
+    const url = `${baseUrl}/models/${encodeURIComponent(config.gemini.model)}:generateContent`;
+    const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       signal: controller.signal,
       body: JSON.stringify({
-        model: config.ollama.model,
-        stream: false,
-        messages: [
+        contents: [
           {
             role: "user",
-            content: prompt || "Describe what is on this screen.",
-            images: [image]
+            parts: [
+              { text: prompt || "Describe what is on this screen." },
+              { inlineData: { mimeType: "image/png", data: image } }
+            ]
           }
         ],
-        options: {
-          num_predict: 260,
-          temperature: 0.2
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 512
         }
       })
     }).finally(() => clearTimeout(timeout));
     if (!response.ok) {
-      return `I captured the screen, but ${config.ollama.model} could not analyze it: HTTP ${response.status}.`;
+      return `I captured the screen, but ${config.gemini.model} could not analyze it: HTTP ${response.status}.`;
     }
-    const payload = (await response.json()) as { message?: { content?: string }; error?: string };
-    if (payload.error) {
-      return `I captured the screen, but ${config.ollama.model} could not analyze images: ${payload.error}.`;
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      error?: { message?: string };
+    };
+    if (payload.error?.message) {
+      return `I captured the screen, but ${config.gemini.model} could not analyze images: ${payload.error.message}.`;
     }
-    return payload.message?.content?.trim() || "I captured the screen, but the vision response was empty.";
+    const text = (payload.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    return text || "I captured the screen, but the vision response was empty.";
   } catch (error) {
     return `I captured the screen, but image analysis failed: ${String(error)}.`;
   }

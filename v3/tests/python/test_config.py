@@ -27,7 +27,7 @@ def write_test_config(root: Path) -> Path:
                     "piperConfig": "Models/piper/model.onnx.json",
                 },
                 "audio": {},
-                "ollama": {"baseUrl": "http://localhost:11434", "model": "test-model"},
+                "gemini": {"baseUrl": "https://generativelanguage.googleapis.com/v1beta", "model": "test-model"},
             }
         ),
         encoding="utf-8",
@@ -40,7 +40,7 @@ def test_load_config_resolves_local_model_paths(tmp_path: Path) -> None:
     config = load_config(config_path)
     raw_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-    assert config.ollama.model == raw_config["ollama"]["model"]
+    assert config.gemini.model == raw_config["gemini"]["model"]
     assert config.models.piper_executable.name == "piper.exe"
     assert config.models.vosk.name == "vosk-model-small-en-us-0.15"
 
