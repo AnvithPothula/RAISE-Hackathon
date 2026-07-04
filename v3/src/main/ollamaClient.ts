@@ -380,11 +380,26 @@ export async function analyzeImageWithOllama(
  */
 export async function warmUpModel(config?: AppConfig): Promise<boolean> {
   try {
-    const response = await fetch(`${resolveOllamaUrl(config)}/api/generate`, {
+    // Prime with the real system prompt + built-in tool schemas so Ollama caches
+    // that (constant) prefix's KV. Real requests then skip re-evaluating it,
+    // which is the dominant cost of first-token latency on larger models.
+    const tools = buildFunctionDeclarations().map((declaration) => ({ type: "function", function: declaration }));
+    const response = await fetch(`${resolveOllamaUrl(config)}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model: resolveOllamaModel(config), keep_alive: KEEP_ALIVE })
+      body: JSON.stringify({
+        model: resolveOllamaModel(config),
+        keep_alive: KEEP_ALIVE,
+        think: false,
+        stream: false,
+        tools,
+        messages: [
+          { role: "system", content: readSystemPrompt() },
+          { role: "user", content: "hi" }
+        ],
+        options: { num_predict: 1, temperature: 1.0, top_p: 0.95, top_k: 64 }
+      })
     });
     return response.ok;
   } catch {

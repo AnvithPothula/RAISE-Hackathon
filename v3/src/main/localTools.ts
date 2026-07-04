@@ -21,6 +21,7 @@ export type LocalToolResult = {
     | "run_code"
     | "cursor_agent"
     | "memory"
+    | "capabilities"
     | "spotify";
   text: string;
   location?: string;
@@ -294,10 +295,41 @@ export async function runLocalTool(
 
 export function resolveDirectLocalTool(prompt: string): LocalToolInvocation | null {
   const cleanPrompt = cleanDirectPrompt(prompt);
+  const normalizedPrompt = cleanPrompt.toLowerCase();
+
+  // "What can you do?" and help queries — instant, no model round-trip.
+  if (
+    /^(?:so\s+)?(?:what|which)\s+(?:can|could|do)\s+you\s+(?:do|help|assist)/i.test(cleanPrompt) ||
+    /^what\s+are\s+you\s+(?:capable|able)\b/i.test(cleanPrompt) ||
+    /^(?:what\s+can\s+i\s+(?:ask|say)|list\s+(?:your\s+)?(?:commands|capabilities|features))/i.test(cleanPrompt)
+  ) {
+    return { name: "capabilities", args: {} };
+  }
+
+  // Screen understanding — route straight to the local Gemma vision tool so it is
+  // a single on-device vision call instead of an extra model tool-selection round.
+  if (
+    /\b(on|reading|read|see|look at|analyz|describe|what'?s on)\b.*\b(screen|display|monitor)\b/i.test(
+      normalizedPrompt
+    ) ||
+    /\b(screen|display|monitor)\b.*\b(say|show|about|content|showing)\b/i.test(normalizedPrompt) ||
+    /^what am i (?:looking at|seeing)\b/i.test(normalizedPrompt)
+  ) {
+    return { name: "screen", args: { query: cleanPrompt } };
+  }
 
   const spotifyInvocation = resolveDirectSpotifyTool(cleanPrompt);
   if (spotifyInvocation) {
     return spotifyInvocation;
+  }
+
+  // "Play something relaxing", "play some jazz", "play <song>" → Spotify playback.
+  const playMatch = cleanPrompt.match(/^(?:please\s+)?play\s+(?:me\s+|some\s+|a\s+|an\s+)?(.+)$/i);
+  if (playMatch) {
+    const query = playMatch[1].replace(/\b(on|in|through|via)\s+spotify\b/i, "").replace(/\s+for me$/i, "").trim();
+    if (query && !/^(the\s+)?(game|video|movie|film|episode|show)\b/i.test(query)) {
+      return { name: "spotify", args: { action: "play", kind: "track", query } };
+    }
   }
 
   const match = cleanPrompt.match(
@@ -389,6 +421,10 @@ export async function runNamedLocalTool(
 
   if (name === "spotify") {
     return runSpotifyTool(args, services);
+  }
+
+  if (name === "capabilities") {
+    return describeCapabilities();
   }
 
   const requestedLocation = cleanLocation(args.location ?? "");
@@ -1463,6 +1499,19 @@ async function runCodeTool(args: LocalToolArgs): Promise<LocalToolResult> {
     text:
       `${label}Ran ${language} locally. Output:\n${stdout || "(no output printed)"}` +
       (stderr ? `\nStderr: ${stderr}` : "")
+  };
+}
+
+/** Instant, model-free capability summary for "what can you do?" style prompts. */
+function describeCapabilities(): LocalToolResult {
+  return {
+    name: "capabilities",
+    text:
+      "I'm Pythos, running entirely on-device with local Gemma. I can open apps and websites, " +
+      "look at your screen and describe it with local vision, check weather and time, set alarms, " +
+      "control Spotify, do math, run code, search the web, research topics, use system tools like " +
+      "clipboard, files, and notes, and remember things you tell me. Everything runs locally, so it " +
+      "keeps working offline and your voice never leaves the machine."
   };
 }
 

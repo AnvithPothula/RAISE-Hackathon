@@ -49,10 +49,10 @@ type ConnectedNode = {
 
 const QUICK_REPLIES = [
   "What can you do?",
+  "What's on my screen?",
   "Open my calendar",
-  "Play something relaxing",
   "Summarize my clipboard",
-  "Turn on do not disturb"
+  "Play something relaxing"
 ];
 
 const TOOL_ICONS: Record<string, React.ElementType> = {
@@ -903,7 +903,7 @@ function SettingsModal({
           <div className="settings-grid single-col">
             <Setting label="Assistant state" value={state} />
             <Setting label="Pi status" value={formatPiStatus(piStatus)} />
-            <Setting label="Brain" value={`Gemma · ${settingsDraft?.ollama?.model ?? "gemma4:12b"}`} />
+            <Setting label="Brain" value={`Gemma · ${activeModel(settingsDraft)} (local)`} />
             <SettingSelect
               label="Adaptive thinking"
               value={settingsDraft?.ollama?.think ?? "auto"}
@@ -1494,8 +1494,16 @@ function fullEventPayload(payload: unknown): string {
   }
 }
 
+/** The Gemma model actually serving requests, honoring low-resource mode. */
+function activeModel(config: AppConfig | null | undefined): string {
+  if (config?.python?.lowResourceMode && config.ollama?.lowResourceModel) {
+    return config.ollama.lowResourceModel;
+  }
+  return config?.ollama?.model ?? "gemma4:12b";
+}
+
 function formatRuntimeSummary(config: AppConfig, status: PiStatus | null): string {
-  const model = config.ollama?.model ?? "gemma4:12b";
+  const model = activeModel(config);
   if (config.pi?.enabled && status?.available) return `Gemma ${model} + Pi tools`;
   return `Gemma ${model}`;
 }

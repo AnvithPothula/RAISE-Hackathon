@@ -210,43 +210,6 @@ server.registerTool(
 );
 
 server.registerTool(
-  "read_text_file",
-  {
-    description:
-      "Read a text file from the user's home directory sandbox. Use for inspecting configs, logs, or source files during research or coding tasks.",
-    inputSchema: {
-      path: z.string().describe("Absolute or home-relative path inside the sandbox."),
-      maxChars: z.number().optional().describe("Maximum characters to return, default 8000.")
-    }
-  },
-  async ({ path: filePath, maxChars }) => {
-    const resolved = resolveSandboxPath(filePath);
-    const limit = Math.min(Math.max(Number(maxChars) || 8000, 500), 20000);
-    const text = fs.readFileSync(resolved, "utf-8");
-    const slice = text.length > limit ? `${text.slice(0, limit)}… (truncated)` : text;
-    return textResult(`File: ${resolved}\n\n${slice}`);
-  }
-);
-
-server.registerTool(
-  "write_text_file",
-  {
-    description:
-      "Write or overwrite a text file in the user's home sandbox. Use for saving generated scripts, notes, or small artifacts.",
-    inputSchema: {
-      path: z.string().describe("Absolute or home-relative path inside the sandbox."),
-      content: z.string().describe("Full file contents to write.")
-    }
-  },
-  async ({ path: filePath, content }) => {
-    const resolved = resolveSandboxPath(filePath);
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, content, "utf-8");
-    return textResult(`Wrote ${content.length} characters to ${resolved}.`);
-  }
-);
-
-server.registerTool(
   "list_directory",
   {
     description: "List files and folders in a directory under the user's home sandbox.",
@@ -261,17 +224,6 @@ server.registerTool(
     const entries = fs.readdirSync(resolved, { withFileTypes: true }).slice(0, max);
     const lines = entries.map((entry) => `${entry.isDirectory() ? "[dir]" : "[file]"} ${entry.name}`);
     return textResult(lines.length ? lines.join("\n") : "(empty directory)");
-  }
-);
-
-server.registerTool(
-  "get_datetime",
-  { description: "Get the current local date and time on the user's machine." },
-  async () => {
-    const now = new Date();
-    return textResult(
-      `Local time: ${now.toLocaleString(undefined, { dateStyle: "full", timeStyle: "long" })} (${now.toISOString()} UTC)`
-    );
   }
 );
 
