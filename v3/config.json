@@ -22,7 +22,7 @@
   },
   "ollama": {
     "baseUrl": "http://127.0.0.1:11434",
-    "model": "gemma4:12b",
+    "model": "gemma4:e2b",
     "lowResourceModel": "gemma4:e2b"
   },
   "gradium": {
