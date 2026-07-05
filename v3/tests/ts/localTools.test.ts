@@ -57,6 +57,19 @@ describe("runNamedLocalTool", () => {
     expect(opened).toEqual(["https://youtube.com/"]);
   });
 
+  it("opens specific website pages without dropping paths or query strings", async () => {
+    const opened: string[] = [];
+
+    const result = await runNamedLocalTool("open_website", { url: "example.com/products/laptops?sort=budget" }, null, {
+      openWebsite: async (url) => {
+        opened.push(url);
+      }
+    });
+
+    expect(opened).toEqual(["https://example.com/products/laptops?sort=budget"]);
+    expect(result.text).toContain("https://example.com/products/laptops?sort=budget");
+  });
+
   it("uses the app opener service with common app aliases", async () => {
     const opened: string[] = [];
 
@@ -155,6 +168,27 @@ describe("runNamedLocalTool", () => {
     expect(result.text).toContain("Result for pythos (example.com)");
     expect(result.text).not.toContain("https://example.com");
     expect(result.text).not.toContain("fetched-fixture");
+  });
+
+  it("uses free DuckDuckGo HTML search when no search service is injected", async () => {
+    let fetchedUrl = "";
+    const html = `
+      <div class="result results_links">
+        <a class="result__a" href="/l/?kh=-1&amp;uddg=https%3A%2F%2Fexample.com%2Fbudget-laptops">Best Budget Laptops</a>
+        <a class="result__snippet">A concise buying guide for affordable laptops.</a>
+      </div>
+    `;
+
+    const result = await runNamedLocalTool("web_search", { query: "best budget laptops" }, null, {
+      fetch: async (url) => {
+        fetchedUrl = String(url);
+        return new Response(html, { status: 200 });
+      }
+    });
+
+    expect(fetchedUrl).toContain("html.duckduckgo.com/html/");
+    expect(result.results?.[0]?.url).toBe("https://example.com/budget-laptops");
+    expect(result.text).toContain("Best Budget Laptops");
   });
 
   it("keeps ambiguous who-is search results concise", async () => {

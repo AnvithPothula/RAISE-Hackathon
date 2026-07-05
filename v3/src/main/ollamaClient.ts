@@ -240,6 +240,9 @@ export async function generateWithOllama(
       knownLocation: context.knownLocation
     }).llmToolScope;
   }
+  if (shouldAutoDeepResearch(prompt, context.toolScope)) {
+    return runDeepResearch(prompt, config, context);
+  }
   const messages = buildMessages(prompt, context);
   const tools = buildTools(context);
 
@@ -296,6 +299,17 @@ export async function generateWithOllama(
   const finalContent = cleanText(final.content) || brainUnavailableFallback(config);
   const verifiedFinal = await verifyOpenAppResponse(prompt, finalContent, context);
   return verifiedFinal ?? finalContent;
+}
+
+export function shouldAutoDeepResearch(prompt: string, toolScope: string | undefined = "full"): boolean {
+  if (toolScope === "none") {
+    return false;
+  }
+  const normalized = String(prompt ?? "").toLowerCase();
+  if (/\b(research|investigate|deep dive|compare|trade-?offs?|pros and cons)\b/.test(normalized)) {
+    return true;
+  }
+  return /\bbest\b/.test(normalized) && /\b(budget|current|latest|today|202\d|deals?|options?|laptops?|phones?|products?)\b/.test(normalized);
 }
 
 // Dispatch a tool call locally. run_sub_agent and deep_research are handled by

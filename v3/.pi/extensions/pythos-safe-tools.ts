@@ -82,41 +82,22 @@ export default function pythosSafeTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "pythos_web_search",
     label: "Web Search",
-    description:
-      "Search the web through Ollama Cloud web_search when PYTHOS_WEB_SEARCH_KEY is configured.",
+    description: "Search the web through DuckDuckGo HTML search. No API key required.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query." }),
       maxResults: Type.Optional(Type.Number({ description: "Maximum results, default 3." }))
     }),
     async execute(_toolCallId, params, signal) {
-      const apiKey = process.env.PYTHOS_WEB_SEARCH_KEY;
-      if (!apiKey) {
-        return textResult("Web search is not configured. Set PYTHOS_WEB_SEARCH_KEY to enable it.");
-      }
-
-      const response = await fetch("https://ollama.com/api/web_search", {
-        method: "POST",
-        signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          query: String(params.query ?? ""),
-          recency: 365,
-          domains: null
-        })
-      });
+      const url = new URL("https://html.duckduckgo.com/html/");
+      url.searchParams.set("q", String(params.query ?? ""));
+      const response = await fetch(url, { signal });
 
       if (!response.ok) {
         return textResult(`Search failed with HTTP ${response.status}.`);
       }
 
-      const payload = (await response.json()) as {
-        results?: Array<{ title?: string; url?: string; content?: string }>;
-      };
       const maxResults = Math.max(1, Math.min(Number(params.maxResults ?? 3), 5));
-      const results = (payload.results ?? []).slice(0, maxResults);
+      const results = parseDuckDuckGoResults(await response.text()).slice(0, maxResults);
       if (results.length === 0) {
         return textResult("No search results found.");
       }
@@ -124,13 +105,56 @@ export default function pythosSafeTools(pi: ExtensionAPI) {
       return textResult(
         results
           .map((result, index) => {
-            const content = (result.content ?? "").split(".")[0];
-            return `${index + 1}. ${result.title ?? "Untitled"}\n${result.url ?? ""}\n${content}`;
+            const content = result.snippet.split(".")[0];
+            return `${index + 1}. ${result.title}\n${result.url}\n${content}`;
           })
           .join("\n\n")
       );
     }
   });
+}
+
+function parseDuckDuckGoResults(html: string): Array<{ title: string; url: string; snippet: string }> {
+  const results: Array<{ title: string; url: string; snippet: string }> = [];
+  const blocks = html.split(/<div class="result results_links/gi).slice(1);
+  for (const block of blocks) {
+    const titleMatch = block.match(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (!titleMatch) {
+      continue;
+    }
+    const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
+    const url = decodeDuckDuckGoUrl(decodeHtml(titleMatch[1] ?? ""));
+    const title = decodeHtml(stripTags(titleMatch[2] ?? "")).trim();
+    const snippet = decodeHtml(stripTags(snippetMatch?.[1] ?? "")).trim();
+    if (title && url) {
+      results.push({ title, url, snippet });
+    }
+  }
+  return results;
+}
+
+function decodeDuckDuckGoUrl(value: string): string {
+  try {
+    const url = new URL(value, "https://duckduckgo.com");
+    const uddg = url.searchParams.get("uddg");
+    return uddg ? decodeURIComponent(uddg) : url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function stripTags(value: string): string {
+  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 function textResult(text: string) {

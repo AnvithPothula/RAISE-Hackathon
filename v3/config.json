@@ -155,19 +155,6 @@
         "env": {
           "GITHUB_PERSONAL_ACCESS_TOKEN": ""
         }
-      },
-      {
-        "name": "brave-search",
-        "enabled": false,
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-brave-search"
-        ],
-        "env": {
-          "BRAVE_API_KEY": ""
-        }
       }
     ]
   },

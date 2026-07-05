@@ -187,7 +187,6 @@ export function buildMacCalendarEventScript(request: SystemCalendarEventRequest)
     `set minutes of eventDate to ${request.allDay ? 0 : date.getMinutes()}`,
     `set seconds of eventDate to ${request.allDay ? 0 : date.getSeconds()}`,
     'tell application "Calendar"',
-    "  activate",
     "  set targetCalendar to first calendar",
     "  try",
     "    repeat with candidateCalendar in calendars",

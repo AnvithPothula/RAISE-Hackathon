@@ -49,6 +49,7 @@ describe("systemAlarm", () => {
     expect(script).toContain('tell application "Calendar"');
     expect(script).toContain('summary:"Vedans \\"birthday\\""');
     expect(script).toContain("allday event:true");
+    expect(script).not.toContain("activate");
     expect(script).toContain('return "OK:CALENDAR_EVENT"');
   });
 

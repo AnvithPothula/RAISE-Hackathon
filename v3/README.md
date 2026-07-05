@@ -27,7 +27,8 @@ Work created at the event (see git history on `main`):
 - **Screen understanding (local):** "what's on my screen?" is answered by Gemma 4
   vision; the screenshot never leaves the machine.
 - **Tools:** transport-agnostic tool runtime (`src/main/toolRuntime.ts`) — weather,
-  alarms, Spotify, open app/website, web search, calculator, memory, MCP tools.
+  calendar-backed alarm requests, Spotify, open app/website, free DuckDuckGo web
+  search, calculator, memory, MCP tools.
 - **Electron main:** process supervision, typed IPC, tool dispatch, Echo/Android bridge.
 - **React renderer:** voice orb visualizer, transcript, controls, tool timeline.
 - **Voice (hybrid, offline-resilient):** with a `GRADIUM_API_KEY` and a live

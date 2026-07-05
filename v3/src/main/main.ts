@@ -651,8 +651,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
     tools: toolsToRun.map((tool) => ({ name: tool.name, args: tool.args }))
   });
 
-  const responses: string[] = [];
-  for (const invocation of toolsToRun) {
+  const responses = await Promise.all(toolsToRun.map(async (invocation) => {
     const startedAt = Date.now();
     broadcastLocalToolEvent("start", {
       name: invocation.name,
@@ -676,8 +675,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
           turnId: context.turnId,
           durationMs: Date.now() - startedAt
         });
-        responses.push(message);
-        continue;
+        return message;
       }
       broadcastLocalToolEvent("end", {
         ...result,
@@ -687,7 +685,7 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
         turnId: context.turnId,
         durationMs: Date.now() - startedAt
       });
-      responses.push(result.text);
+      return result.text;
     } catch (error) {
       const message = formatDirectToolFailure(invocation.name, error);
       debug(`direct local tool failed name=${invocation.name} error=${String(error)}`);
@@ -700,9 +698,9 @@ async function runDirectLocalTool(prompt: string, context: { turnId: number; sou
         turnId: context.turnId,
         durationMs: Date.now() - startedAt
       });
-      responses.push(message);
+      return message;
     }
-  }
+  }));
 
   return responses.filter(Boolean).join(" ");
 }

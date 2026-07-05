@@ -133,6 +133,15 @@ describe("routeUserIntent", () => {
     expect(decision.invocation).toEqual({ name: "open_app", args: { app: "spotify" } });
   });
 
+  it("routes specific website pages to open_website", () => {
+    const decision = routeUserIntent("open example.com/products/laptops?sort=budget");
+    expect(decision.difficulty).toBe("instant");
+    expect(decision.invocation).toEqual({
+      name: "open_website",
+      args: { url: "example.com/products/laptops?sort=budget" }
+    });
+  });
+
   it("opens known home folders instantly instead of sending them to the model", () => {
     const decision = routeUserIntent("Open my downloads folder");
     expect(decision.difficulty).toBe("instant");
@@ -312,6 +321,28 @@ describe("routeUserIntent", () => {
     expect(invocations).toEqual([
       { name: "weather", args: {} },
       { name: "calendar", args: { action: "add", title: "Wish Jimmy happy birthday", date: "tomorrow" } }
+    ]);
+  });
+
+  it("collects temperature plus calendar add as direct tools", () => {
+    const invocations = collectInstantInvocations(
+      "What's the temperature and also add Mbappe's birthday on December 20th?",
+      { knownLocation: "Eagan, Minnesota" }
+    );
+    expect(invocations).toEqual([
+      { name: "weather", args: {} },
+      { name: "calendar", args: { action: "add", title: "Mbappe's birthday", date: "December 20th" } }
+    ]);
+  });
+
+  it("collects weather plus STT-past-tense calendar add as direct tools", () => {
+    const invocations = collectInstantInvocations(
+      "What's the weather and also added Mbappe's birthday on December 20th?",
+      { knownLocation: "Eagan, Minnesota" }
+    );
+    expect(invocations).toEqual([
+      { name: "weather", args: {} },
+      { name: "calendar", args: { action: "add", title: "Mbappe's birthday", date: "December 20th" } }
     ]);
   });
 

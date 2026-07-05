@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampRounds, decideThinking, parseResearchPlan } from "../../src/main/ollamaClient.js";
+import { clampRounds, decideThinking, parseResearchPlan, shouldAutoDeepResearch } from "../../src/main/ollamaClient.js";
 import { buildFunctionDeclarations } from "../../src/main/toolRuntime.js";
 
 describe("decideThinking", () => {
@@ -25,6 +25,16 @@ describe("decideThinking", () => {
 
   it("respects pinned-off mode", () => {
     expect(decideThinking("explain quantum entanglement step by step", "off").think).toBe(false);
+  });
+});
+
+describe("shouldAutoDeepResearch", () => {
+  it("forces explicit research requests into the research loop", () => {
+    expect(shouldAutoDeepResearch("Research the best budget laptops and tell me the trade-offs.", "full")).toBe(true);
+  });
+
+  it("does not force research when tools are disabled", () => {
+    expect(shouldAutoDeepResearch("Research the best budget laptops.", "none")).toBe(false);
   });
 });
 

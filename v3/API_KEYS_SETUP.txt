@@ -8,7 +8,8 @@ nothing about your prompts or screen ever leaves the machine, and NO
 cloud LLM API key is required.
 
 This is a PUBLIC repo, so no keys are committed. The only keys below are
-for OPTIONAL cloud enhancements (studio-quality voice, web search). The
+for OPTIONAL cloud enhancements (studio-quality voice). Web search uses
+the built-in free DuckDuckGo HTML path and does not need an API key. The
 Python worker inherits the environment of whatever shell launches the
 app, so any keys you do use must be exported in that shell BEFORE you
 start Pythos.
@@ -74,7 +75,6 @@ typed chat and tool loops use the cloud model instead of local Ollama.
                             http://127.0.0.1:11434)
   PYTHOS_CURSOR_WORKSPACE -> project directory for Cursor agent CLI tasks
   PYTHOS_MCP_SANDBOX     -> root directory MCP file tools may read/write
-  PYTHOS_WEB_SEARCH_KEY  -> web search tool
   SPOTIFY_CLIENT_ID      -> Spotify control
 
 Note: GEMINI_API_KEY / GOOGLE_API_KEY are NO LONGER USED by the core

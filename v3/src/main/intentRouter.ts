@@ -339,6 +339,9 @@ function resolveOpenFolderIntent(cleanPrompt: string, normalized: string): Local
     if (!raw) {
       continue;
     }
+    if (looksLikeExplicitWebsiteTarget(raw)) {
+      return null;
+    }
     if (!looksLikeFolderOpenRequest(cleanPrompt, raw)) {
       continue;
     }
@@ -484,14 +487,14 @@ function resolveCalendarIntent(cleanPrompt: string, normalized: string): LocalTo
   if (reminder) {
     return reminder;
   }
-  if (!/\b(add|ad|put|schedule|create)\b/.test(normalized)) {
+  if (!/\b(add|ad|added|put|schedule|create)\b/.test(normalized)) {
     return null;
   }
   if (!looksLikeCalendarDate(normalized)) {
     return null;
   }
   const match = cleanPrompt.match(
-    /^(?:please\s+)?(?:add|ad|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+(.+)$/i
+    /\b(?:add|ad|added|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+((?:today|tomorrow|sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat|january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec|\d{1,2}\/\d{1,2})[\w\s,/-]*?)$/i
   );
   if (!match) {
     return null;
@@ -568,9 +571,9 @@ function extractCalendarDateText(prompt: string): string | null {
 }
 
 function extractRecentCalendarTitle(recentUserText: string): string {
-  const parts = recentUserText.split(/\s+(?=(?:add|ad|put|schedule|create)\b)/i).reverse();
+  const parts = recentUserText.split(/\s+(?=(?:add|ad|added|put|schedule|create)\b)/i).reverse();
   for (const part of parts) {
-    const match = part.match(/^(?:add|ad|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+(.+)$/i);
+    const match = part.match(/^(?:add|ad|added|put|schedule|create)\s+(.+?)\s+(?:on|for)\s+(.+)$/i);
     if (match?.[1]) {
       return cleanCalendarTitle(match[1]);
     }
@@ -1167,6 +1170,14 @@ function looksLikeWebsiteName(value: string): boolean {
     /^https?:\/\//i.test(trimmed) ||
     /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/.*)?$/i.test(trimmed) ||
     Boolean(WEBSITE_ALIASES[trimmed.toLowerCase()])
+  );
+}
+
+function looksLikeExplicitWebsiteTarget(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    /^https?:\/\//i.test(trimmed) ||
+    /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#].*)?$/i.test(trimmed)
   );
 }
 
