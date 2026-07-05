@@ -7,14 +7,14 @@ Native Android client for the Pythos v3 desktop bridge.
 - Sends typed prompts to the PC through the Pythos bridge.
 - Records a 16 kHz mono WAV prompt, uploads it, and plays the WAV reply returned by the PC.
 - Sends online, heartbeat, and offline events so the phone appears as an orbiting node in the desktop UI.
-- Keeps command execution on the Windows PC. For example, `open excel` launches Excel on the PC, not on the phone.
+- Keeps command execution on the desktop PC. For example, `open excel` launches Excel on the PC, not on the phone.
 
 ## Desktop setup
 
-Run Pythos v3 on the PC while Tailscale is connected:
+Run Pythos v3 on the desktop (macOS, Windows, or Linux) while Tailscale is connected:
 
-```powershell
-cd C:\Helper-Base\v3
+```bash
+cd path/to/RAISE-Hackathon/v3
 npm run dev
 ```
 

@@ -7,13 +7,18 @@ internet doesn't, and your prompts and screen never get shipped to a datacenter.
 
 Built for the RAISE Summit Hackathon 2026 (Google DeepMind Remote / on-device Gemma track).
 
+Pythos is a voice agent that *acts* — it is not a dashboard, not a chatbot, and not RAG.
+
 ## Built during RAISE 2026 (July 4–5)
 
 Work created at the event (see git history on `main`):
 
 - **Gemma 4 on-device brain** — full migration from cloud Gemini to local Ollama (`gemma4:12b`), including tool calling, vision, and adaptive thinking
 - **Offline voice fallback** — a network-state detector swaps the streaming Gradium cloud voice for on-device Vosk STT + Piper/system TTS the moment the network drops (or when no API key is set); the Gemma brain never notices
-- **Agentic loops** — `deep_research` self-looping research agent, local sub-agents, `run_code` sandbox
+- **Agentic loops** — `deep_research` self-looping research agent (auto-routed for explicit research/compare prompts), local sub-agents, `run_code` sandbox
+- **Calendar integration** — add/list dated events via macOS Calendar (AppleScript); alarm requests create Calendar events instead of native Clock alarms
+- **Deterministic intent routing** — `intentRouter.ts` matches weather, calendar, alarms, clipboard, screen, Spotify play, and more before Gemma runs; compound requests execute multiple direct tools in parallel
+- **Free web search** — DuckDuckGo HTML parsing (no API key); specific URLs open via `open_website` with full paths and query strings preserved
 - **Cursor integration** — optional `delegate_coding_task` via Cursor agent CLI when installed
 - **MCP connector layer** — pythos-system, filesystem, and memory servers with live status in the UI
 - **Demo HUD** — on-device badge, live voice-mode indicator (cloud vs local), tok/s + TTFT performance stats for judges
@@ -27,8 +32,15 @@ Work created at the event (see git history on `main`):
 - **Screen understanding (local):** "what's on my screen?" is answered by Gemma 4
   vision; the screenshot never leaves the machine.
 - **Tools:** transport-agnostic tool runtime (`src/main/toolRuntime.ts`) — weather,
-  calendar-backed alarm requests, Spotify, open app/website, free DuckDuckGo web
-  search, calculator, memory, MCP tools.
+  Calendar events (add/list), calendar-backed alarm requests, Spotify, open
+  app/website (including specific URL paths), free DuckDuckGo web search,
+  calculator, memory, MCP tools.
+- **Intent router:** `src/main/intentRouter.ts` resolves common voice commands
+  deterministically before the LLM is called. Supports contextual follow-ups
+  (e.g. a date-only reply after "add X's birthday on Wednesday"), STT
+  mishearing recovery ("added" → add, garbled alarm phrases), and parallel
+  execution of independent tools in compound requests ("what's the temperature
+  and add Mbappe's birthday on December 20th").
 - **Electron main:** process supervision, typed IPC, tool dispatch, Echo/Android bridge.
 - **React renderer:** voice orb visualizer, transcript, controls, tool timeline.
 - **Voice (hybrid, offline-resilient):** with a `GRADIUM_API_KEY` and a live
@@ -82,8 +94,10 @@ npm install
 npm install
 ```
 
-No API key is required to run the assistant. For cloud spoken voice (optional),
-add `GRADIUM_API_KEY` — see `API_KEYS_SETUP.txt`.
+No API key is required to run the assistant. Spoken voice works offline out of
+the box (Vosk STT + Piper or OS TTS). For studio-quality cloud voice when
+online, add `GRADIUM_API_KEY` — see `API_KEYS_SETUP.txt`. Web search is free
+via DuckDuckGo and needs no key.
 
 ### 3. (Optional) Offline speech recognition
 
@@ -130,11 +144,46 @@ The toggle is safe everywhere: on non-Apple-Silicon hosts, or when the MLX
 tag is not pulled, Pythos automatically degrades to the standard build (the
 perf HUD names the model that actually served each turn).
 
+## Intent routing
+
+Pythos uses a two-layer tool strategy for speed and reliability:
+
+| Layer | What runs | Examples |
+|-------|-----------|----------|
+| **Instant (zero LLM)** | `intentRouter.ts` matches and executes locally | Weather, time, math, Calendar add/list, alarm→Calendar, memory, open app/site, web search, clipboard, screen vision, folder listing, Spotify play, capabilities |
+| **`none` tool scope** | Gemma answers with zero tools | General knowledge, history, definitions, chat |
+| **`minimal` scope** | Small tool surface | Simple operational prompts |
+| **`standard` scope** | MCP system + filesystem tools | File/folder queries |
+| **`full` scope** | All tools including agents | Research, code, compare, multi-part requests |
+
+Compound requests that match multiple instant tools (e.g. weather + calendar add)
+run in parallel via `Promise.all` — no sequential waiting.
+
+Voice transcripts are normalized before routing (`voiceTranscript.ts`) to fix
+common STT mishearings ("set in alarm" → "set an alarm", "added" → "add").
+
+## Calendar and alarms
+
+macOS Calendar is the source of truth for dated items:
+
+- **Add events:** "Add Vedans' birthday on October 30th" → Calendar event (silent, no UI pop-up)
+- **List schedule:** "What do I have in the morning on Wednesday?" → reads Calendar via AppleScript
+- **Alarm requests:** "Set an alarm for 5 AM" → timed Calendar event (Pythos cannot create native Clock alarms; responses say so honestly)
+- **Follow-ups:** A date-only reply ("July 8th") links to the title from the previous turn
+
+Calendar listing and creation are currently supported on macOS. Other platforms
+return a clear unsupported message.
+
 ## MCP tool support
 
 Pythos can connect to external [Model Context Protocol](https://modelcontextprotocol.io)
 servers and expose their tools to the local Gemma assistant automatically.
-Configure servers under the `mcp` key in `config.json`:
+Configure servers under the `mcp` key in `config.json`. **Default enabled:**
+`system` (clipboard, stats, files, notes) and `filesystem` (home-sandboxed file
+access). **Off by default:** `memory`, `sequential-thinking`, `puppeteer`,
+`time`, `context7`, `github` — each has a `_comment` in config explaining why
+(enabling too many MCP servers slows first-token latency and causes wrong tool
+calls on local ~12B/e2b models).
 
 ```json
 {
@@ -142,16 +191,18 @@ Configure servers under the `mcp` key in `config.json`:
     "enabled": true,
     "servers": [
       {
-        "name": "filesystem",
+        "name": "system",
+        "enabled": true,
         "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        "command": "node",
+        "args": ["scripts/pythos-mcp-server.mjs"]
       },
       {
-        "name": "docs",
-        "transport": "http",
-        "url": "https://example.com/mcp",
-        "headers": { "Authorization": "Bearer <token>" }
+        "name": "filesystem",
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "{{PYTHOS_HOME}}"]
       }
     ]
   }
@@ -223,10 +274,30 @@ Events are JSONL objects emitted to stdout: `state`, `audio_level`,
 
 ## Notes
 
+### What runs where
+
+| Component | Location | Offline? |
+|-----------|----------|----------|
+| LLM (Gemma 4) | Local Ollama | Yes |
+| Screen vision | Local Ollama | Yes |
+| Tool routing + execution | Local Electron main | Yes |
+| Calendar events | macOS Calendar (AppleScript) | Yes |
+| Web search | DuckDuckGo HTML (network needed) | No |
+| Voice STT/TTS (default) | Local Vosk + Piper/OS voice | Yes |
+| Voice STT/TTS (optional) | Gradium cloud | No |
+| Android/Alexa remote | Thin client → desktop bridge | Client only; brain stays on desktop |
+
 - The LLM backend is **local Gemma 4 via Ollama** — no cloud key, no data leaves
   the machine. Configure it under the `ollama` key in `config.json`.
 - `GEMINI_API_KEY` is **not** used by the assistant anymore. It is only relevant
   for the optional, off-by-default experimental Pi tool bridge (`pi.enabled`).
+- Web search uses **free DuckDuckGo HTML parsing** by default — no
+  `PYTHOS_WEB_SEARCH_KEY` or Brave API key required. The Pi bridge extension
+  (`pythos-safe-tools.ts`) uses the same path.
+- Per-user settings are stored in the OS user-data directory
+  (`~/Library/Application Support/Pythos/user-settings.json` on macOS), not in
+  the committed `config.json`. Each user's toggles survive app restarts without
+  clobbering team defaults.
 - The offline ASR model is the full `vosk-model-en-us-0.22` under `Models/vosk`;
   install it with `scripts/install-vosk-model.*`. Offline TTS prefers a Piper
   install at the `models.piper*` paths in `config.json` and otherwise uses the

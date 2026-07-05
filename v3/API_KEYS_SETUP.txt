@@ -8,11 +8,11 @@ nothing about your prompts or screen ever leaves the machine, and NO
 cloud LLM API key is required.
 
 This is a PUBLIC repo, so no keys are committed. The only keys below are
-for OPTIONAL cloud enhancements (studio-quality voice). Web search uses
-the built-in free DuckDuckGo HTML path and does not need an API key. The
-Python worker inherits the environment of whatever shell launches the
-app, so any keys you do use must be exported in that shell BEFORE you
-start Pythos.
+for OPTIONAL cloud enhancements (studio-quality voice, optional cloud
+Gemma via OpenRouter). Web search uses the built-in free DuckDuckGo HTML
+path and does not need an API key. The Python worker inherits the
+environment of whatever shell launches the app, so any keys you do use
+must be exported in that shell BEFORE you start Pythos.
 
 
 ----------------------------------------------------------------------
@@ -40,17 +40,22 @@ sub-agents, and screen vision all work with just Ollama + Gemma, offline.
 
 
 ----------------------------------------------------------------------
- OPTIONAL: cloud voice (speech-to-text + text-to-speech)
+ OPTIONAL: cloud voice (studio-quality STT + TTS when online)
 ----------------------------------------------------------------------
 
   GRADIUM_API_KEY   -> Studio-quality streaming voice (get it at
                        https://studio.gradium.ai)
 
-Voice input/output (wake word -> STT -> TTS) currently uses the Gradium
-cloud API, so speaking to Pythos needs GRADIUM_API_KEY. TYPED prompts in
-the desktop UI work fully offline with no key. If GRADIUM_API_KEY is not
-set, Pythos still runs and emits a clear "GRADIUM_API_KEY is not set"
-notice; only spoken voice is unavailable.
+When GRADIUM_API_KEY is set and the network is up, wake word, STT, and
+TTS stream through the Gradium cloud API for studio quality. When the key
+is missing OR the network drops, Pythos automatically falls back to fully
+local voice: Vosk STT + Piper (if installed) or the OS system voice
+(macOS `say`, Windows System.Speech, Linux espeak-ng). The Gemma brain
+path never changes. Typed prompts always work offline with no key.
+
+Install the offline ASR model once for spoken input without Gradium:
+  ./scripts/install-vosk-model.sh        # macOS / Linux
+  .\scripts\install-vosk-model.ps1        # Windows PowerShell
 
 
 ----------------------------------------------------------------------
@@ -67,6 +72,15 @@ typed chat and tool loops use the cloud model instead of local Ollama.
 
 
 ----------------------------------------------------------------------
+ FREE: web search (no API key)
+----------------------------------------------------------------------
+
+Web search and deep research use DuckDuckGo HTML parsing built into
+localTools.ts. No BRAVE_API_KEY, PYTHOS_WEB_SEARCH_KEY, or MCP search
+server is required. Results are summarized for spoken output.
+
+
+----------------------------------------------------------------------
  OPTIONAL: other integrations
 ----------------------------------------------------------------------
 
@@ -75,7 +89,9 @@ typed chat and tool loops use the cloud model instead of local Ollama.
                             http://127.0.0.1:11434)
   PYTHOS_CURSOR_WORKSPACE -> project directory for Cursor agent CLI tasks
   PYTHOS_MCP_SANDBOX     -> root directory MCP file tools may read/write
-  SPOTIFY_CLIENT_ID      -> Spotify control
+  SPOTIFY_CLIENT_ID      -> Spotify control (a default client ID is in
+                            config.json; set your own for production)
+  GITHUB_PERSONAL_ACCESS_TOKEN -> only if you enable the github MCP server
 
 Note: GEMINI_API_KEY / GOOGLE_API_KEY are NO LONGER USED by the core
 assistant (it is fully local now). They are only relevant if you manually
@@ -93,14 +109,14 @@ the file before launching. The file is gitignored so it will NOT commit.
 # macOS / Linux (bash or zsh):
 cd /path/to/RAISE-Hackathon/v3
 cp .env.example .env
-echo 'GRADIUM_API_KEY=your_key_here' >> .env      # only if you want voice
+echo 'GRADIUM_API_KEY=your_key_here' >> .env      # only if you want cloud voice
 set -a; source ./.env; set +a
 npm run dev
 
 # Windows - PowerShell:
 cd path\to\RAISE-Hackathon\v3
 Copy-Item .env.example .env -Force
-Add-Content .env "GRADIUM_API_KEY=your_key_here"   # only if you want voice
+Add-Content .env "GRADIUM_API_KEY=your_key_here"   # only if you want cloud voice
 
 
 ----------------------------------------------------------------------
@@ -110,9 +126,13 @@ Add-Content .env "GRADIUM_API_KEY=your_key_here"   # only if you want voice
   Ollama up + model pulled:
     curl http://127.0.0.1:11434/api/tags        # should list gemma4:12b
 
-  Voice key visible (only if using voice):
+  Voice key visible (only if using cloud voice):
     macOS / Linux:   echo $GRADIUM_API_KEY
     PowerShell:      echo $env:GRADIUM_API_KEY
+
+  Offline voice (no key needed):
+    Install Vosk model (see above), launch app — HUD shows
+    "Voice: Local (offline)" or "Voice: Gradium (cloud)".
 
 If `ollama list` shows gemma4:12b, launch the app and start talking (or
 typing) — the brain is already running locally.

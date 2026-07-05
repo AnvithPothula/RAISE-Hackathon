@@ -4,6 +4,8 @@
 
 Pythos runs wake word detection, conversation, tool calling, and screen understanding on-device with **Gemma 4 via [Ollama](https://ollama.com)**. Typed chat works fully offline with no API keys. Optional cloud voice (Gradium) adds studio-quality speech when you want it.
 
+Pythos is a voice agent that *acts* — it is not a dashboard, not a chatbot, and not RAG. Your voice, screen, and prompts stay on your machine.
+
 Built for the **RAISE Summit Hackathon 2026** — Google DeepMind Remote / on-device Gemma track.
 
 ---
@@ -27,8 +29,9 @@ Built for the **RAISE Summit Hackathon 2026** — Google DeepMind Remote / on-de
 - **On-device LLM** — Gemma 4 through Ollama; no cloud API key required for reasoning or tools
 - **Local screen vision** — “What’s on my screen?” answered without sending screenshots off-device
 - **Voice orb UI** — Electron + React desktop app with transcript, controls, and tool timeline
-- **Agentic tools** — weather, alarms, Spotify, app launcher, web search, memory, MCP connectors, and more
-- **Offline resilience** — keep *talking* after Wi‑Fi drops: a network detector swaps cloud voice for on-device Vosk STT + Piper/system TTS, and the local Gemma brain never skips a beat
+- **Agentic tools** — weather, Calendar events (including alarm requests saved to Calendar), Spotify, app/website launcher, free DuckDuckGo web search, deep research, memory, MCP connectors, and more
+- **Deterministic intent routing** — common commands (weather, calendar, clipboard, screen, Spotify play, etc.) bypass the LLM for instant, reliable answers; compound requests run multiple tools in parallel
+- **Offline resilience** — keep *talking* after Wi‑Fi drops: a network detector swaps cloud voice for on-device Vosk STT + Piper/system TTS, and the local Gemma brain never skips a beat. No API key required — local voice is the default when `GRADIUM_API_KEY` is unset
 - **Live demo HUD** — “All inference on-device” badge, voice-mode indicator, and real tok/s + TTFT from Ollama
 - **MLX engine variant** — optional Apple-Silicon build (`gemma4:12b-mlx`) toggle for extra token throughput
 - **Remote nodes** — Android and Alexa/Echo clients over Tailscale (optional), with the same offline voice fallback
@@ -171,10 +174,13 @@ No API keys are required for typed chat, tools, or screen vision.
 | Variable | Purpose |
 |----------|---------|
 | `GRADIUM_API_KEY` | Studio-quality cloud voice (STT + TTS) via [Gradium](https://studio.gradium.ai); without it (or offline) voice runs on-device (Vosk + Piper/system TTS) |
+| `OPENROUTER_API_KEY` | Optional cloud Gemma via [OpenRouter](https://openrouter.ai) — enable in Settings → LLM provider |
 | `PYTHOS_OLLAMA_MODEL` | Override default model (`gemma4:12b`) |
 | `PYTHOS_OLLAMA_URL` | Override Ollama endpoint |
 | `PYTHOS_CURSOR_WORKSPACE` | Project path for Cursor agent delegation |
 | `PYTHOS_MCP_SANDBOX` | Root directory for MCP file tools |
+
+Web search uses built-in DuckDuckGo HTML parsing — no search API key required.
 
 Create a local env file (gitignored):
 

@@ -65,8 +65,9 @@ The rules ban basic-RAG, dashboards-as-main-feature, and off-track cloud LLMs. S
 
 **We win on:**
 - **Agentic depth.** Every competitor we saw does single-shot Q&A or one advisory. Pythos runs a
-  *multi-tool* loop on local Gemma — alarm, Spotify, open-app, web, **screen vision**, persistent
-  memory — with a sub-agent. Nobody else has this. **This is the headline.**
+  *multi-tool* loop on local Gemma — Calendar events, calendar-backed alarm requests, Spotify,
+  open-app, free web search, **screen vision**, persistent memory — with parallel direct-tool
+  execution for compound requests and a sub-agent. Nobody else has this. **This is the headline.**
 - **Local vision.** `analyzeImageWithOllama` = "what's on my screen?" answered by Gemma 4 vision
   with the screenshot never leaving the device. turnpilot/KrishiMitra/novasaur don't have a vision
   privacy beat.
@@ -98,8 +99,9 @@ The rules ban basic-RAG, dashboards-as-main-feature, and off-track cloud LLMs. S
    "Pythos is a voice agent that *acts* — it is not a dashboard, not a chatbot, not RAG."
 
 ### P0 — Make the demo un-loseable (3–4 h)
-3. **The multi-tool offline chain** — one spoken request that fires ≥2 tools locally (e.g. "what's on
-   my screen, and set a timer for it") → proves agentic depth no competitor has. Rehearse it.
+3. **The multi-tool offline chain** — one spoken request that fires ≥2 tools locally (e.g. "what's
+   the temperature and add Mbappe's birthday on December 20th") → proves agentic depth no competitor
+   has. Rehearse it.
 4. **Wi-Fi kill switch on camera** — still the single best 50%-weight moment. Voice audibly degrades
    cloud→local. Nobody else will *show* offline this viscerally.
 5. **On-screen HUD**: tok/s + "100% on-device" + model name (`gemma4:e2b`). Judges love visible proof.
